@@ -42,7 +42,7 @@ CPU_VARIANTS = {
 }
 
 GCC_FLAGS = {
-    "standard": "-march=rv64ima -mabi=lp64 ",
+    "standard": "-mcmodel=medany -march=rv64ima -mabi=lp64 ",
 }
 
 class BlackParrotRV64(CPU):

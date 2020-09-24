@@ -24,6 +24,12 @@ AR_quiet      = @echo " AR      " $@ && $(AR_normal)
 LD_quiet      = @echo " LD      " $@ && $(LD_normal)
 OBJCOPY_quiet = @echo " OBJCOPY " $@ && $(OBJCOPY_normal)
 
+ifeq ($(CPUENDIANNESS),little)
+	endian = -D __LITTLE_ENDIAN
+else
+	endian = -D __BIG_ENDIAN
+endif
+
 ifeq ($(V),1)
 	CC = $(CC_normal)
 	CX = $(CX_normal)
@@ -50,7 +56,7 @@ INCLUDES = -I$(SOC_DIRECTORY)/software/include/base \
            -I$(SOC_DIRECTORY)/software \
            -I$(BUILDINC_DIRECTORY) \
            -I$(CPU_DIRECTORY)
-COMMONFLAGS = $(DEPFLAGS) -Os $(CPUFLAGS) -g3 -fomit-frame-pointer -Wall -fno-builtin -nostdinc $(INCLUDES)
+COMMONFLAGS = $(DEPFLAGS) -Os $(CPUFLAGS) -g3 -fomit-frame-pointer -Wall -fno-builtin -nostdinc $(INCLUDES) $(endian) -D_IEEE_LIBM
 CFLAGS = $(COMMONFLAGS) -fexceptions -Wstrict-prototypes -Wold-style-definition -Wmissing-prototypes
 CXXFLAGS = $(COMMONFLAGS) -std=c++11 -I$(SOC_DIRECTORY)/software/include/basec++ -fexceptions -fno-rtti -ffreestanding
 LDFLAGS = -nostdlib -nodefaultlibs -L$(BUILDINC_DIRECTORY)

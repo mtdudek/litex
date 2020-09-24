@@ -10,6 +10,9 @@ from collections import OrderedDict
 import urllib.request
 
 current_path = os.path.abspath(os.curdir)
+# Check location (is litex_setup.py executed inside a cloned LiteX repository or alongside?)
+if os.path.exists(".gitignore"):
+    current_path = os.path.join(current_path, "../")
 
 # Repositories -------------------------------------------------------------------------------------
 
@@ -46,6 +49,7 @@ repos = [
     ("pythondata-cpu-picorv32",    ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-serv",        ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-vexriscv",    ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-cpu-vexriscv-smp",("https://github.com/litex-hub/", True,  True, None)),
     ("pythondata-cpu-rocket",      ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-minerva",     ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-microwatt",   ("https://github.com/litex-hub/", False, True, 0xba76652)),
