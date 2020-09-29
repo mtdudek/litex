@@ -171,8 +171,7 @@ def _run_sim(build_name, as_root=False):
     except:
         pass
     if (sys.platform != "win32" and interactive):
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, termios_setting)
-
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, termios_settings)
 
 
 class SimVerilatorToolchain:
