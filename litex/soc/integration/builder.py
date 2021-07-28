@@ -33,12 +33,14 @@ def _create_dir(d):
 # Software Packages --------------------------------------------------------------------------------
 
 soc_software_packages = [
+    # picolibc
+    "libc",
+
     # Compiler-RT.
     "libcompiler_rt",
 
     # LiteX cores.
     "libbase",
-    "libc",
 
     # LiteX Ecosystem cores.
     "libfatfs",
