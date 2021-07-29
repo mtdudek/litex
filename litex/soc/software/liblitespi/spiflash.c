@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <crc.h>
+#include <base/crc.h>
 
 #include <generated/csr.h>
 #include <generated/mem.h>
