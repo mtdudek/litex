@@ -40,7 +40,9 @@ soc_software_packages = [
     "libcompiler_rt",
 
     # LiteX cores.
-    "libbase",
+    "libutils",
+    "libcomm",
+    "libmisc",
 
     # LiteX Ecosystem cores.
     "libfatfs",
