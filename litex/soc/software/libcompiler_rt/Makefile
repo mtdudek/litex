@@ -11,6 +11,7 @@ OBJECTS=umodsi3.o udivsi3.o divsi3.o modsi3.o comparesf2.o comparedf2.o negsf2.o
   floatsisf.o floatunsisf.o fixsfsi.o fixdfdi.o fixunssfsi.o fixunsdfdi.o adddf3.o subdf3.o muldf3.o divdf3.o floatsidf.o floatunsidf.o floatdidf.o fixdfsi.o fixunsdfsi.o \
   clzsi2.o ctzsi2.o udivdi3.o umoddi3.o moddi3.o ucmpdi2.o extendsfdf2.o truncdfsf2.o floatundidf.o
 
+
 all: libcompiler_rt.a
 
 libcompiler_rt.a: $(OBJECTS) mulsi3.o

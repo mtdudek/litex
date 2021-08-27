@@ -48,8 +48,8 @@ CPU_VARIANTS = ["standard", "sim"]
 # GCC Flags ----------------------------------------------------------------------------------------
 
 GCC_FLAGS = {
-    "standard": "-march=rv64imafd -mabi=lp64d ",
-    "sim":      "-march=rv64imafd -mabi=lp64d ",
+    "standard": "-mcmodel=medany -march=rv64imafd -mabi=lp64d ",
+    "sim":      "-mcmodel=medany -march=rv64imafd -mabi=lp64d ",
 }
 
 # BlackParrotRV64 ----------------------------------------------------------------------------------
