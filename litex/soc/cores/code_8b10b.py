@@ -1,6 +1,9 @@
-# This file is Copyright (c) 2016-2017 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2016-2017 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2019-2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# SPDX-License-Identifier: BSD-2-Clause
 
 """
 IBM's 8b/10b Encoding
@@ -21,6 +24,12 @@ from operator import add
 
 from migen import *
 
+from litex.soc.interconnect import stream
+
+# Helpers ------------------------------------------------------------------------------------------
+
+def K(x, y):
+    return (y << 5) | x
 
 def disparity(word, nbits):
     n0 = 0
@@ -65,7 +74,7 @@ def reverse_table(inputs, nbits):
     return outputs
 
 
-# 5b6b
+# 5b6b ---------------------------------------------------------------------------------------------
 
 table_5b6b = [
     0b011000,
@@ -102,15 +111,15 @@ table_5b6b = [
     0b010100,
 ]
 table_5b6b_unbalanced = [bool(disparity(c, 6)) for c in table_5b6b]
-table_5b6b_flip = list(table_5b6b_unbalanced)
-table_5b6b_flip[7] = True
+table_5b6b_flip       = list(table_5b6b_unbalanced)
+table_5b6b_flip[7]    = True
 
 table_6b5b = reverse_table_flip(table_5b6b, table_5b6b_flip, 6)
-# K.28
-table_6b5b[0b001111] = 0b11100
-table_6b5b[0b110000] = 0b11100
 
-# 3b4b
+table_6b5b[0b001111] = 0b11100 # K.28
+table_6b5b[0b110000] = 0b11100 # K.28
+
+# 3b4b ---------------------------------------------------------------------------------------------
 
 table_3b4b = [
     0b0100,
@@ -120,42 +129,44 @@ table_3b4b = [
     0b0010,
     0b1010,
     0b0110,
-    0b0001,  # primary D.x.7
+    0b0001,  # Primary D.x.7
 ]
 table_3b4b_unbalanced = [bool(disparity(c, 4)) for c in table_3b4b]
-table_3b4b_flip = list(table_3b4b_unbalanced)
-table_3b4b_flip[3] = True
+table_3b4b_flip       = list(table_3b4b_unbalanced)
+table_3b4b_flip[3]    = True
 
 table_4b3b = reverse_table_flip(table_3b4b, table_3b4b_flip, 4)
-# alternative D.x.7
+# Alternative D.x.7
 table_4b3b[0b0111] = 0b0111
 table_4b3b[0b1000] = 0b0111
 
 table_4b3b_kn = reverse_table(table_3b4b, 4)
 table_4b3b_kp = reverse_table([~x & 0b1111 for x in table_3b4b], 4)
-# primary D.x.7 is not used
+# Primary D.x.7 is not used
 table_4b3b_kn[0b0001] = 0b000
 table_4b3b_kn[0b1000] = 0b111
 table_4b3b_kp[0b1110] = 0b000
 table_4b3b_kp[0b0111] = 0b111
 
+# Single Encoder -----------------------------------------------------------------------------------
 
+@CEInserter()
 class SingleEncoder(Module):
     def __init__(self, lsb_first=False):
-        self.d = Signal(8)
-        self.k = Signal()
-        self.disp_in = Signal()
+        self.d        = Signal(8)
+        self.k        = Signal()
+        self.disp_in  = Signal()
 
-        self.output = Signal(10)
+        self.output   = Signal(10)
         self.disp_out = Signal()
 
         # # #
 
-        # stage 1: 5b/6b and 3b/4b encoding
-        code5b = self.d[:5]
-        code6b = Signal(6, reset_less=True)
+        # Stage 1: 5b/6b and 3b/4b encoding.
+        code5b            = self.d[:5]
+        code6b            = Signal(6, reset_less=True)
         code6b_unbalanced = Signal(reset_less=True)
-        code6b_flip = Signal()
+        code6b_flip       = Signal()
         self.sync += [
             If(self.k & (code5b == 28),
                 code6b.eq(0b110000),
@@ -168,10 +179,10 @@ class SingleEncoder(Module):
             )
         ]
 
-        code3b = self.d[5:]
-        code4b = Signal(4, reset_less=True)
+        code3b            = self.d[5:]
+        code4b            = Signal(4, reset_less=True)
         code4b_unbalanced = Signal(reset_less=True)
-        code4b_flip = Signal()
+        code4b_flip       = Signal()
         self.sync += [
             code4b.eq(Array(table_3b4b)[code3b]),
             code4b_unbalanced.eq(Array(table_3b4b_unbalanced)[code3b]),
@@ -182,8 +193,8 @@ class SingleEncoder(Module):
             )
         ]
 
-        alt7_rd0 = Signal(reset_less=True)  # if disparity is -1, use alternative D.x.7
-        alt7_rd1 = Signal(reset_less=True)  # if disparity is +1, use alternative D.x.7
+        alt7_rd0 = Signal(reset_less=True)  # If disparity is -1, use alternative D.x.7.
+        alt7_rd1 = Signal(reset_less=True)  # If disparity is +1, use alternative D.x.7.
         self.sync += [
             alt7_rd0.eq(0),
             alt7_rd1.eq(0),
@@ -199,8 +210,8 @@ class SingleEncoder(Module):
             )
         ]
 
-        # stage 2 (combinatorial): disparity control
-        output_6b = Signal(6)
+        # Stage 2 (combinatorial): disparity control.
+        output_6b  = Signal(6)
         disp_inter = Signal()
         self.comb += [
             disp_inter.eq(self.disp_in ^ code6b_unbalanced),
@@ -237,41 +248,45 @@ class SingleEncoder(Module):
         else:
             self.comb += self.output.eq(output_msb_first)
 
+# Encoder ------------------------------------------------------------------------------------------
 
 class Encoder(Module):
     def __init__(self, nwords=1, lsb_first=False):
-        self.d = [Signal(8) for _ in range(nwords)]
-        self.k = [Signal() for _ in range(nwords)]
-        self.output = [Signal(10, reset_less=True) for _ in range(nwords)]
+        self.ce = Signal(reset=1)
+        self.d  = [Signal(8) for _ in range(nwords)]
+        self.k  = [Signal() for _ in range(nwords)]
+        self.output    = [Signal(10, reset_less=True) for _ in range(nwords)]
         self.disparity = [Signal() for _ in range(nwords)]
 
         # # #
 
         encoders = [SingleEncoder(lsb_first) for _ in range(nwords)]
+        self.comb += [encoder.ce.eq(self.ce) for encoder in encoders]
         self.submodules += encoders
 
-        self.sync += encoders[0].disp_in.eq(encoders[-1].disp_out)
+        self.sync += If(self.ce, encoders[0].disp_in.eq(encoders[-1].disp_out))
         for e1, e2 in zip(encoders, encoders[1:]):
             self.comb += e2.disp_in.eq(e1.disp_out)
 
-        for d, k, output, disparity, encoder in \
-                zip(self.d, self.k, self.output, self.disparity, encoders):
+        for d, k, output, disparity, encoder in zip(self.d, self.k, self.output, self.disparity, encoders):
             self.comb += [
                 encoder.d.eq(d),
                 encoder.k.eq(k)
             ]
             output.reset_less = True
-            self.sync += [
+            self.sync += If(self.ce,
                 output.eq(encoder.output),
                 disparity.eq(encoder.disp_out)
-            ]
+            )
 
+# Decoder ------------------------------------------------------------------------------------------
 
 class Decoder(Module):
     def __init__(self, lsb_first=False):
-        self.input = Signal(10)
-        self.d = Signal(8)
-        self.k = Signal()
+        self.ce      = Signal(reset=1)
+        self.input   = Signal(10)
+        self.d       = Signal(8)
+        self.k       = Signal()
         self.invalid = Signal()
 
         # # #
@@ -289,11 +304,12 @@ class Decoder(Module):
         code3b = Signal(3, reset_less=True)
 
         mem_6b5b  = Memory(5, len(table_6b5b), init=table_6b5b)
-        port_6b5b = mem_6b5b.get_port()
+        port_6b5b = mem_6b5b.get_port(has_re=True)
         self.specials += mem_6b5b, port_6b5b
         self.comb += port_6b5b.adr.eq(code6b)
+        self.comb += port_6b5b.re.eq(self.ce)
 
-        self.sync += [
+        self.sync += If(self.ce,
             self.k.eq(0),
             If(code6b == 0b001111,
                 self.k.eq(1),
@@ -312,12 +328,63 @@ class Decoder(Module):
                 ),
                 code3b.eq(Array(table_4b3b)[code4b])
             ),
-        ]
+        )
         self.comb += code5b.eq(port_6b5b.dat_r)
         self.comb += self.d.eq(Cat(code5b, code3b))
 
         # Basic invalid symbols detection: check that we have 4,5 or 6 ones in the symbol. This does
         # not report all invalid symbols but still allow detecting issues with the link.
         ones = Signal(4, reset_less=True)
-        self.sync += ones.eq(reduce(add, [self.input[i] for i in range(10)]))
+        self.sync += If(self.ce, ones.eq(reduce(add, [self.input[i] for i in range(10)])))
         self.comb += self.invalid.eq((ones != 4) & (ones != 5) & (ones != 6))
+
+
+# Stream Encoder -----------------------------------------------------------------------------------
+
+class StreamEncoder(stream.PipelinedActor):
+    def __init__(self, nwords=1):
+        self.sink   = sink   = stream.Endpoint([("d", nwords*8), ("k", nwords)])
+        self.source = source = stream.Endpoint([("data", nwords*10)])
+        stream.PipelinedActor.__init__(self, latency=2)
+
+        # # #
+
+        # Encoders
+        encoder = Encoder(nwords, True)
+        self.submodules += encoder
+
+        # Control
+        self.comb += encoder.ce.eq(self.pipe_ce)
+
+        # Datapath
+        for i in range(nwords):
+            self.comb += [
+                encoder.k[i].eq(sink.k[i]),
+                encoder.d[i].eq(sink.d[8*i:8*(i+1)]),
+                source.data[10*i:10*(i+1)].eq(encoder.output[i])
+            ]
+
+# Stream Encoder -----------------------------------------------------------------------------------
+
+class StreamDecoder(stream.PipelinedActor):
+    def __init__(self, nwords=1):
+        self.sink   = sink   = stream.Endpoint([("data", nwords*10)])
+        self.source = source = stream.Endpoint([("d", nwords*8), ("k", nwords)])
+        stream.PipelinedActor.__init__(self, latency=1)
+
+        # # #
+
+        # Decoders
+        decoders = [Decoder(True) for _ in range(nwords)]
+        self.submodules += decoders
+
+        # Control
+        self.comb += [decoders[i].ce.eq(self.pipe_ce) for i in range(nwords)]
+
+        # Datapath
+        for i in range(nwords):
+            self.comb += [
+                decoders[i].input.eq(sink.data[10*i:10*(i+1)]),
+                source.k[i].eq(decoders[i].k),
+                source.d[8*i:8*(i+1)].eq(decoders[i].d)
+            ]

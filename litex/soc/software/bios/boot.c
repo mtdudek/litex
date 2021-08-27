@@ -10,10 +10,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <console.h>
-#include <uart.h>
 #include <system.h>
-#include <crc.h>
 #include <string.h>
 #include <irq.h>
 
@@ -23,17 +20,21 @@
 
 #include "sfl.h"
 #include "boot.h"
-#include "jsmn.h"
 
-#include <progress.h>
-#include <spiflash.h>
+#include <libcomm/uart.h>
+
+#include <libutils/console.h>
+#include <libutils/crc.h>
+#include <libutils/jsmn.h>
+#include <libutils/progress.h>
 
 #include <libliteeth/udp.h>
 #include <libliteeth/tftp.h>
 
 #include <liblitesdcard/spisdcard.h>
 #include <liblitesdcard/sdcard.h>
-#include <liblitesdcard/fat/ff.h>
+#include <liblitesata/sata.h>
+#include <libfatfs/ff.h>
 
 /*-----------------------------------------------------------------------*/
 /* Helpers                                                               */
@@ -48,20 +49,20 @@
 
 extern void boot_helper(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr);
 
-static void __attribute__((noreturn)) boot(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr)
+void __attribute__((noreturn)) boot(unsigned long r1, unsigned long r2, unsigned long r3, unsigned long addr)
 {
-	printf("Executing booted program at 0x%08x\n\n", addr);
+	printf("Executing booted program at 0x%08lx\n\n", addr);
 	printf("--============= \e[1mLiftoff!\e[0m ===============--\n");
+#ifdef CSR_UART_BASE
 	uart_sync();
+#endif
 #ifdef CONFIG_CPU_HAS_INTERRUPT
 	irq_setmask(0);
 	irq_setie(0);
 #endif
 	flush_cpu_icache();
 	flush_cpu_dcache();
-#ifdef CONFIG_L2_SIZE
 	flush_l2_cache();
-#endif
 
 #if defined(CONFIG_CPU_TYPE_MOR1KX) && defined(CONFIG_CPU_VARIANT_LINUX)
 	/* Mainline Linux expects to have exception vector base address set to the
@@ -101,6 +102,8 @@ void romboot(void)
 /* Serial Boot                                                           */
 /*-----------------------------------------------------------------------*/
 
+#ifdef CSR_UART_BASE
+
 static int check_ack(void)
 {
 	int recognized;
@@ -108,7 +111,11 @@ static int check_ack(void)
 
 	timer0_en_write(0);
 	timer0_reload_write(0);
+#ifndef CONFIG_DISABLE_DELAYS
 	timer0_load_write(CONFIG_CLOCK_FREQUENCY/4);
+#else
+	timer0_load_write(0);
+#endif
 	timer0_en_write(1);
 	timer0_update_value_write(1);
 	recognized = 0;
@@ -156,7 +163,7 @@ int serialboot(void)
 	printf("Booting from serial...\n");
 	printf("Press Q or ESC to abort boot completely.\n");
 
-	/* send the serialboot "magic" request to Host */
+	/* Send the serialboot "magic" request to Host */
 	c = str;
 	while(*c) {
 		uart_write(*c);
@@ -171,7 +178,7 @@ int serialboot(void)
 		printf("Cancelled\n");
 		return 0;
 	}
-	/* assume ACK_OK */
+	/* Assume ACK_OK */
 
 	failed = 0;
 	while(1) {
@@ -188,20 +195,18 @@ int serialboot(void)
 			frame.payload[i] = uart_read();
 
 		/* Check Frame CRC (if CMD has a CRC) */
-		if (frame.cmd != SFL_CMD_LOAD_NO_CRC) {
-			actualcrc = ((int)frame.crc[0] << 8)|(int)frame.crc[1];
-			goodcrc = crc16(&frame.cmd, frame.payload_length+1);
-			if(actualcrc != goodcrc) {
-				/* Clear out the RX buffer */
-				while (uart_read_nonblock()) uart_read();
-				failed++;
-				if(failed == MAX_FAILED) {
-					printf("Too many consecutive errors, aborting");
-					return 1;
-				}
-				uart_write(SFL_ACK_CRCERROR);
-				continue;
+		actualcrc = ((int)frame.crc[0] << 8)|(int)frame.crc[1];
+		goodcrc = crc16(&frame.cmd, frame.payload_length+1);
+		if(actualcrc != goodcrc) {
+			/* Clear out the RX buffer */
+			while (uart_read_nonblock()) uart_read();
+			failed++;
+			if(failed == MAX_FAILED) {
+				printf("Too many consecutive errors, aborting");
+				return 1;
 			}
+			uart_write(SFL_ACK_CRCERROR);
+			continue;
 		}
 
 		/* Execute Frame CMD */
@@ -210,12 +215,11 @@ int serialboot(void)
 				failed = 0;
 				uart_write(SFL_ACK_SUCCESS);
 				return 1;
-			case SFL_CMD_LOAD:
-			case SFL_CMD_LOAD_NO_CRC: {
+			case SFL_CMD_LOAD: {
 				char *writepointer;
 
 				failed = 0;
-				writepointer = (char *) get_uint32(&frame.payload[0]);
+				writepointer = (char *)(uintptr_t) get_uint32(&frame.payload[0]);
 				for(i=4;i<frame.payload_length;i++)
 					*(writepointer++) = frame.payload[i];
 				if (frame.cmd == SFL_CMD_LOAD)
@@ -231,31 +235,6 @@ int serialboot(void)
 				boot(0, 0, 0, addr);
 				break;
 			}
-			case SFL_CMD_FLASH: {
-#if (defined CSR_SPIFLASH_BASE && defined SPIFLASH_PAGE_SIZE)
-				uint32_t addr;
-
-				failed = 0;
-				addr = get_uint32(&frame.payload[0]);
-
-				for (i = 4; i < frame.payload_length; i++) {
-					// erase page at sector boundaries before writing
-					if ((addr & (SPIFLASH_SECTOR_SIZE - 1)) == 0) {
-						erase_flash_sector(addr);
-					}
-					write_to_flash(addr, &frame.payload[i], 1);
-					addr++;
-				}
-				uart_write(SFL_ACK_SUCCESS);
-#endif
-				break;
-			}
-			case SFL_CMD_REBOOT:
-#ifdef CSR_CTRL_RESET_ADDR
-				uart_write(SFL_ACK_SUCCESS);
-				ctrl_reset_write(1);
-#endif
-				break;
 			default:
 				failed++;
 				if(failed == MAX_FAILED) {
@@ -269,43 +248,160 @@ int serialboot(void)
 	return 1;
 }
 
+#endif
+
 /*-----------------------------------------------------------------------*/
 /* Ethernet Boot                                                         */
 /*-----------------------------------------------------------------------*/
 
 #ifdef CSR_ETHMAC_BASE
 
-#ifndef LOCALIP1
-#define LOCALIP1 192
-#define LOCALIP2 168
-#define LOCALIP3 1
-#define LOCALIP4 50
-#endif
-
-#ifndef REMOTEIP1
-#define REMOTEIP1 192
-#define REMOTEIP2 168
-#define REMOTEIP3 1
-#define REMOTEIP4 100
-#endif
-
 #ifndef TFTP_SERVER_PORT
 #define TFTP_SERVER_PORT 69
 #endif
 
-static const unsigned char macadr[6] = {0x10, 0xe2, 0xd5, 0x00, 0x00, 0x00};
+static unsigned char macadr[6] = {0x10, 0xe2, 0xd5, 0x00, 0x00, 0x00};
+
+#ifdef LOCALIP1
+static unsigned int local_ip[4] = {LOCALIP1, LOCALIP2, LOCALIP3, LOCALIP4};
+#else
+static unsigned int local_ip[4] = {192, 168, 1, 50};
+#endif
+
+#ifdef REMOTEIP1
+static unsigned int remote_ip[4] = {REMOTEIP1, REMOTEIP2, REMOTEIP3, REMOTEIP4};
+#else
+static unsigned int remote_ip[4] = {192, 168, 1, 100};
+#endif
 
 static int copy_file_from_tftp_to_ram(unsigned int ip, unsigned short server_port,
 const char *filename, char *buffer)
 {
 	int size;
-	printf("Copying %s to 0x%08x... ", filename, buffer);
+	printf("Copying %s to %p... ", filename, buffer);
 	size = tftp_get(ip, server_port, filename, buffer);
 	if(size > 0)
 		printf("(%d bytes)", size);
 	printf("\n");
 	return size;
 }
+
+#ifdef ETH_DYNAMIC_IP
+
+static uint8_t parse_ip(const char * ip_address, unsigned int * ip_to_change)
+{
+	uint8_t n = 0;
+	uint8_t k = 0;
+	uint8_t i;
+	uint8_t size = strlen(ip_address);
+	unsigned int ip_to_set[4];
+	char buf[3];
+
+	if (size < 7 || size > 15) {
+		printf("Error: Invalid IP address length.");
+		return -1;
+	}
+
+	/* Extract numbers from input, check for potential errors */
+	for (i = 0; i < size; i++) {
+		if ((ip_address[i] == '.' && k != 0) || (ip_address[i] == '\n' && i == size - 1)) {
+			ip_to_set[n] = atoi(buf);
+			n++;
+			k = 0;
+			memset(buf, '\0', sizeof(buf));
+		} else if (ip_address[i] >= '0' && ip_address[i] <= '9' && k < 3) {
+			buf[k] = ip_address[i];
+			k++;
+		} else {
+			printf("Error: Invalid IP address format. Correct format is \"X.X.X.X\".");
+			return -1;
+		}
+	}
+	ip_to_set[n] = atoi(buf);
+
+	/* Check if a correct number of numbers was extracted from the input*/
+	if (n != 3) {
+		printf("Error: Invalid IP address format. Correct format is \"X.X.X.X\".");
+		return -1;
+	}
+
+	/* Set the extracted IP address as local or remote ip */
+	for (i = 0; i <= n; i++) {
+		ip_to_change[i] = ip_to_set[i];
+	}
+	return 0;
+}
+
+void set_local_ip(const char * ip_address)
+{
+	if (parse_ip(ip_address, local_ip) == 0) {
+		udp_set_ip(IPTOINT(local_ip[0], local_ip[1], local_ip[2], local_ip[3]));
+		printf("Local IP: %d.%d.%d.%d", local_ip[0], local_ip[1], local_ip[2], local_ip[3]);
+	}
+}
+
+void set_remote_ip(const char * ip_address)
+{
+	if (parse_ip(ip_address, remote_ip) == 0) {
+		printf("Remote IP: %d.%d.%d.%d", remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3]);
+	}
+}
+
+static uint8_t parse_mac_addr(const char * mac_address)
+{
+	uint8_t n = 0;
+	uint8_t k = 0;
+	uint8_t i;
+	uint8_t size = strlen(mac_address);
+	unsigned int mac_to_set[6];
+	char buf[2];
+
+	if (size != 17) {
+		printf("Error: Invalid MAC address length.");
+		return -1;
+	}
+
+	/* Extract numbers from input, check for potential errors */
+	for (i = 0; i < size; i++) {
+		if ((mac_address[i] == ':' && k != 0) || (mac_address[i] == '\n' && i == size - 1)) {
+			mac_to_set[n] = strtol(buf, NULL, 16);
+			n++;
+			k = 0;
+			memset(buf, '\0', sizeof(buf));
+		} else if (((mac_address[i] >= '0' && mac_address[i] <= '9') ||
+			(mac_address[i] >= 'a' && mac_address[i] <= 'f') ||
+			(mac_address[i] >= 'A' && mac_address[i] <= 'F')) && k < 2) {
+			buf[k] = mac_address[i];
+			k++;
+		} else {
+			printf("Error: Invalid MAC address format. Correct format is \"XX:XX:XX:XX:XX:XX\".");
+			return -1;
+		}
+	}
+	mac_to_set[n] = strtol(buf, NULL, 16);
+
+	/* Check if correct number of numbers was extracted from input */
+	if (n != 5) {
+		printf("Error: Invalid MAC address format. Correct format is \"XX:XX:XX:XX:XX:XX\".");
+		return -1;
+	}
+
+	/* Set the extracted MAC address as macadr */
+	for (i = 0; i <= n; i++) {
+		macadr[i] = mac_to_set[i];
+	}
+	return 0;
+}
+
+void set_mac_addr(const char * mac_address)
+{
+	if (parse_mac_addr(mac_address) == 0) {
+		udp_set_mac(macadr);
+		printf("MAC address : %x:%x:%x:%x:%x:%x", macadr[0], macadr[1], macadr[2], macadr[3], macadr[4], macadr[5]);
+	}
+}
+
+#endif
 
 static void netboot_from_json(const char * filename, unsigned int ip, unsigned short tftp_port)
 {
@@ -314,10 +410,17 @@ static void netboot_from_json(const char * filename, unsigned int ip, unsigned s
 	uint8_t count;
 
 	/* FIXME: modify/increase if too limiting */
-	char json_buffer[256];
-	char image_filename[32];
-	char image_address[32];
-	uint8_t image_found;
+	char json_buffer[1024];
+	char json_name[32];
+	char json_value[32];
+
+	unsigned long boot_r1 = 0;
+	unsigned long boot_r2 = 0;
+	unsigned long boot_r3 = 0;
+	unsigned long boot_addr = 0;
+
+	uint8_t image_found = 0;
+	uint8_t boot_addr_found = 0;
 
 	/* Read JSON file */
 	size = tftp_get(ip, tftp_port, filename, json_buffer);
@@ -325,31 +428,55 @@ static void netboot_from_json(const char * filename, unsigned int ip, unsigned s
 		return;
 
 	/* Parse JSON file */
-	jsmntok_t t[16];
+	jsmntok_t t[32];
 	jsmn_parser p;
 	jsmn_init(&p);
-	image_found = 0;
 	count = jsmn_parse(&p, json_buffer, strlen(json_buffer), t, sizeof(t)/sizeof(*t));
 	for (i=0; i<count-1; i++) {
-		/* Images are JSON strings with 1 children */
+		memset(json_name,   0, sizeof(json_name));
+		memset(json_value,  0, sizeof(json_value));
+		/* Elements are JSON strings with 1 children */
 		if ((t[i].type == JSMN_STRING) && (t[i].size == 1)) {
-			/* Get Image filename */
-			memset(image_filename, 0, sizeof(image_filename));
-			memcpy(image_filename, json_buffer+t[i].start,   t[i].end   - t[i].start);
-			/* Get Image address */
-			memset(image_address,  0, sizeof(image_address));
-			memcpy(image_address,  json_buffer+t[i+1].start, t[i+1].end - t[i+1].start);
+			/* Get Element's filename */
+			memcpy(json_name, json_buffer + t[i].start, t[i].end - t[i].start);
+			/* Get Element's address */
+			memcpy(json_value, json_buffer + t[i+1].start, t[i+1].end - t[i+1].start);
+			/* Skip bootargs (optional) */
+			if (strncmp(json_name, "bootargs", 8) == 0) {
+				continue;
+			}
+			/* Get boot addr (optional) */
+			else if (strncmp(json_name, "addr", 4) == 0) {
+				boot_addr = strtoul(json_value, NULL, 0);
+				boot_addr_found = 1;
+			}
+			/* Get boot r1 (optional) */
+			else if (strncmp(json_name, "r1", 2) == 0) {
+				memcpy(json_name, json_buffer + t[i].start, t[i].end - t[i].start);
+				boot_r1 = strtoul(json_value, NULL, 0);
+			}
+			/* Get boot r2 (optional) */
+			else if (strncmp(json_name, "r2", 2) == 0) {
+				boot_r2 = strtoul(json_value, NULL, 0);
+			}
+			/* Get boot r3 (optional) */
+			else if (strncmp(json_name, "r3", 2) == 0) {
+				boot_r3 = strtoul(json_value, NULL, 0);
 			/* Copy Image from Network to address */
-			size = copy_file_from_tftp_to_ram(ip, tftp_port, image_filename, (void *)strtoul(image_address, NULL, 0));
-			if (size <= 0)
-				return;
-			image_found = 1;
+			} else {
+				size = copy_file_from_tftp_to_ram(ip, tftp_port, json_name, (void *)strtoul(json_value, NULL, 0));
+				if (size <= 0)
+					return;
+				image_found = 1;
+				if (boot_addr_found == 0) /* Boot to last Image address if no bootargs.addr specified */
+					boot_addr = strtoul(json_value, NULL, 0);
+			}
 		}
 	}
 
-	/* Boot to last Image address */
+	/* Boot */
 	if (image_found)
-		boot(0, 0, 0, strtoul(image_address, NULL, 0));
+		boot(boot_r1, boot_r2, boot_r3, boot_addr);
 }
 
 static void netboot_from_bin(const char * filename, unsigned int ip, unsigned short tftp_port)
@@ -361,25 +488,34 @@ static void netboot_from_bin(const char * filename, unsigned int ip, unsigned sh
 	boot(0, 0, 0, MAIN_RAM_BASE);
 }
 
-void netboot(void)
+void netboot(int nb_params, char **params)
 {
 	unsigned int ip;
+	char * filename = NULL;
 
+	if (nb_params > 0 )
+		filename = params[0];
 
 	printf("Booting from network...\n");
-	printf("Local IP : %d.%d.%d.%d\n", LOCALIP1, LOCALIP2, LOCALIP3, LOCALIP4);
-	printf("Remote IP: %d.%d.%d.%d\n", REMOTEIP1, REMOTEIP2, REMOTEIP3, REMOTEIP4);
 
-	ip = IPTOINT(REMOTEIP1, REMOTEIP2, REMOTEIP3, REMOTEIP4);
-	udp_start(macadr, IPTOINT(LOCALIP1, LOCALIP2, LOCALIP3, LOCALIP4));
+	printf("Local IP: %d.%d.%d.%d\n", local_ip[0], local_ip[1], local_ip[2], local_ip[3]);
+	printf("Remote IP: %d.%d.%d.%d\n", remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3]);
 
-	/* Boot from boot.json */
-	printf("Booting from boot.json...\n");
-	netboot_from_json("boot.json", ip, TFTP_SERVER_PORT);
+	ip = IPTOINT(remote_ip[0], remote_ip[1], remote_ip[2], remote_ip[3]);
+	udp_start(macadr, IPTOINT(local_ip[0], local_ip[1], local_ip[2], local_ip[3]));
 
-	/* Boot from boot.bin */
-	printf("Booting from boot.bin...\n");
-	netboot_from_bin("boot.bin", ip, TFTP_SERVER_PORT);
+	if (filename) {
+		printf("Booting from %s (JSON)...\n", filename);
+		netboot_from_json(filename, ip, TFTP_SERVER_PORT);
+	} else {
+		/* Boot from boot.json */
+		printf("Booting from boot.json...\n");
+		netboot_from_json("boot.json", ip, TFTP_SERVER_PORT);
+
+		/* Boot from boot.bin */
+		printf("Booting from boot.bin...\n");
+		netboot_from_bin("boot.bin", ip, TFTP_SERVER_PORT);
+	}
 
 	/* Boot failed if we are here... */
 	printf("Network boot failed.\n");
@@ -423,7 +559,7 @@ static int copy_image_from_flash_to_ram(unsigned int flash_address, unsigned lon
 
 	length = check_image_in_flash(flash_address);
 	if(length > 0) {
-		printf("Copying 0x%08x to 0x%08x (%d bytes)...\n", flash_address, ram_address, length);
+		printf("Copying 0x%08x to 0x%08lx (%d bytes)...\n", flash_address, ram_address, length);
 		offset = 0;
 		init_progression_bar(length);
 		while (length > 0) {
@@ -495,7 +631,7 @@ static int copy_file_from_sdcard_to_ram(const char * filename, unsigned long ram
 	}
 
 	length = f_size(&file);
-	printf("Copying %s to 0x%08x (%d bytes)...\n", filename, ram_address, length);
+	printf("Copying %s to 0x%08lx (%d bytes)...\n", filename, ram_address, length);
 	init_progression_bar(length);
 	offset = 0;
 	for (;;) {
@@ -532,10 +668,17 @@ static void sdcardboot_from_json(const char * filename)
 	uint32_t result;
 
 	/* FIXME: modify/increase if too limiting */
-	char json_buffer[256];
-	char image_filename[32];
-	char image_address[32];
-	uint8_t image_found;
+	char json_buffer[1024];
+	char json_name[32];
+	char json_value[32];
+
+	unsigned long boot_r1 = 0;
+	unsigned long boot_r2 = 0;
+	unsigned long boot_r3 = 0;
+	unsigned long boot_addr = 0;
+
+	uint8_t image_found = 0;
+	uint8_t boot_addr_found = 0;
 
 	/* Read JSON file */
 	fr = f_mount(&fs, "", 1);
@@ -555,31 +698,55 @@ static void sdcardboot_from_json(const char * filename)
 	f_mount(0, "", 0);
 
 	/* Parse JSON file */
-	jsmntok_t t[16];
+	jsmntok_t t[32];
 	jsmn_parser p;
 	jsmn_init(&p);
-	image_found = 0;
 	count = jsmn_parse(&p, json_buffer, strlen(json_buffer), t, sizeof(t)/sizeof(*t));
 	for (i=0; i<count-1; i++) {
-		/* Images are JSON strings with 1 children */
+		memset(json_name,   0, sizeof(json_name));
+		memset(json_value,  0, sizeof(json_value));
+		/* Elements are JSON strings with 1 children */
 		if ((t[i].type == JSMN_STRING) && (t[i].size == 1)) {
-			/* Get Image filename */
-			memset(image_filename, 0, sizeof(image_filename));
-			memcpy(image_filename, json_buffer+t[i].start,   t[i].end   - t[i].start);
-			/* Get Image address */
-			memset(image_address,  0, sizeof(image_address));
-			memcpy(image_address,  json_buffer+t[i+1].start, t[i+1].end - t[i+1].start);
+			/* Get Element's filename */
+			memcpy(json_name, json_buffer + t[i].start, t[i].end - t[i].start);
+			/* Get Element's address */
+			memcpy(json_value, json_buffer + t[i+1].start, t[i+1].end - t[i+1].start);
+			/* Skip bootargs (optional) */
+			if (strncmp(json_name, "bootargs", 8) == 0) {
+				continue;
+			}
+			/* Get boot addr (optional) */
+			else if (strncmp(json_name, "addr", 4) == 0) {
+				boot_addr = strtoul(json_value, NULL, 0);
+				boot_addr_found = 1;
+			}
+			/* Get boot r1 (optional) */
+			else if (strncmp(json_name, "r1", 2) == 0) {
+				memcpy(json_name, json_buffer + t[i].start, t[i].end - t[i].start);
+				boot_r1 = strtoul(json_value, NULL, 0);
+			}
+			/* Get boot r2 (optional) */
+			else if (strncmp(json_name, "r2", 2) == 0) {
+				boot_r2 = strtoul(json_value, NULL, 0);
+			}
+			/* Get boot r3 (optional) */
+			else if (strncmp(json_name, "r3", 2) == 0) {
+				boot_r3 = strtoul(json_value, NULL, 0);
 			/* Copy Image from SDCard to address */
-			result = copy_file_from_sdcard_to_ram(image_filename, strtoul(image_address, NULL, 0));
-			if (result == 0)
-				return;
-			image_found = 1;
+			} else {
+				result = copy_file_from_sdcard_to_ram(json_name, strtoul(json_value, NULL, 0));
+				if (result == 0)
+					return;
+				image_found = 1;
+				if (boot_addr_found == 0) /* Boot to last Image address if no bootargs.addr specified */
+					boot_addr = strtoul(json_value, NULL, 0);
+			}
 		}
 	}
 
-	/* Boot to last Image address */
+	/* Boot */
 	if (image_found)
-		boot(0, 0, 0, strtoul(image_address, NULL, 0));
+		boot(boot_r1, boot_r2, boot_r3, boot_addr);
 }
 
 static void sdcardboot_from_bin(const char * filename)
@@ -610,5 +777,175 @@ void sdcardboot(void)
 
 	/* Boot failed if we are here... */
 	printf("SDCard boot failed.\n");
+}
+#endif
+
+/*-----------------------------------------------------------------------*/
+/* SATA Boot                                                             */
+/*-----------------------------------------------------------------------*/
+
+#if defined(CSR_SATA_SECTOR2MEM_BASE)
+
+static int copy_file_from_sata_to_ram(const char * filename, unsigned long ram_address)
+{
+	FRESULT fr;
+	FATFS fs;
+	FIL file;
+	uint32_t br;
+	uint32_t offset;
+	uint32_t length;
+
+	fr = f_mount(&fs, "", 1);
+	if (fr != FR_OK)
+		return 0;
+	fr = f_open(&file, filename, FA_READ);
+	if (fr != FR_OK) {
+		printf("%s file not found.\n", filename);
+		f_mount(0, "", 0);
+		return 0;
+	}
+
+	length = f_size(&file);
+	printf("Copying %s to 0x%08lx (%d bytes)...\n", filename, ram_address, length);
+	init_progression_bar(length);
+	offset = 0;
+	for (;;) {
+		fr = f_read(&file, (void*) ram_address + offset,  0x8000, &br);
+		if (fr != FR_OK) {
+			printf("file read error.\n");
+			f_close(&file);
+			f_mount(0, "", 0);
+			return 0;
+		}
+		if (br == 0)
+			break;
+		offset += br;
+		show_progress(offset);
+	}
+	show_progress(offset);
+	printf("\n");
+
+	f_close(&file);
+	f_mount(0, "", 0);
+
+	return 1;
+}
+
+static void sataboot_from_json(const char * filename)
+{
+	FRESULT fr;
+	FATFS fs;
+	FIL file;
+
+	uint8_t i;
+	uint8_t count;
+	uint32_t length;
+	uint32_t result;
+
+	/* FIXME: modify/increase if too limiting */
+	char json_buffer[1024];
+	char json_name[32];
+	char json_value[32];
+
+	unsigned long boot_r1 = 0;
+	unsigned long boot_r2 = 0;
+	unsigned long boot_r3 = 0;
+	unsigned long boot_addr = 0;
+
+	uint8_t image_found = 0;
+	uint8_t boot_addr_found = 0;
+
+	/* Read JSON file */
+	fr = f_mount(&fs, "", 1);
+	if (fr != FR_OK)
+		return;
+	fr = f_open(&file, filename, FA_READ);
+	if (fr != FR_OK) {
+		printf("%s file not found.\n", filename);
+		f_mount(0, "", 0);
+		return;
+	}
+
+	fr = f_read(&file, json_buffer, sizeof(json_buffer), &length);
+
+	/* Close JSON file */
+	f_close(&file);
+	f_mount(0, "", 0);
+
+	/* Parse JSON file */
+	jsmntok_t t[32];
+	jsmn_parser p;
+	jsmn_init(&p);
+	count = jsmn_parse(&p, json_buffer, strlen(json_buffer), t, sizeof(t)/sizeof(*t));
+	for (i=0; i<count-1; i++) {
+		memset(json_name,   0, sizeof(json_name));
+		memset(json_value,  0, sizeof(json_value));
+		/* Elements are JSON strings with 1 children */
+		if ((t[i].type == JSMN_STRING) && (t[i].size == 1)) {
+			/* Get Element's filename */
+			memcpy(json_name, json_buffer + t[i].start, t[i].end - t[i].start);
+			/* Get Element's address */
+			memcpy(json_value, json_buffer + t[i+1].start, t[i+1].end - t[i+1].start);
+			/* Skip bootargs (optional) */
+			if (strncmp(json_name, "bootargs", 8) == 0) {
+				continue;
+			}
+			/* Get boot addr (optional) */
+			else if (strncmp(json_name, "addr", 4) == 0) {
+				boot_addr = strtoul(json_value, NULL, 0);
+				boot_addr_found = 1;
+			}
+			/* Get boot r1 (optional) */
+			else if (strncmp(json_name, "r1", 2) == 0) {
+				memcpy(json_name, json_buffer + t[i].start, t[i].end - t[i].start);
+				boot_r1 = strtoul(json_value, NULL, 0);
+			}
+			/* Get boot r2 (optional) */
+			else if (strncmp(json_name, "r2", 2) == 0) {
+				boot_r2 = strtoul(json_value, NULL, 0);
+			}
+			/* Get boot r3 (optional) */
+			else if (strncmp(json_name, "r3", 2) == 0) {
+				boot_r3 = strtoul(json_value, NULL, 0);
+			/* Copy Image from SDCard to address */
+			} else {
+				result = copy_file_from_sata_to_ram(json_name, strtoul(json_value, NULL, 0));
+				if (result == 0)
+					return;
+				image_found = 1;
+				if (boot_addr_found == 0) /* Boot to last Image address if no bootargs.addr specified */
+					boot_addr = strtoul(json_value, NULL, 0);
+			}
+		}
+	}
+
+	/* Boot */
+	if (image_found)
+		boot(boot_r1, boot_r2, boot_r3, boot_addr);
+}
+
+static void sataboot_from_bin(const char * filename)
+{
+	uint32_t result;
+	result = copy_file_from_sata_to_ram(filename, MAIN_RAM_BASE);
+	if (result == 0)
+		return;
+	boot(0, 0, 0, MAIN_RAM_BASE);
+}
+
+void sataboot(void)
+{
+	printf("Booting from SATA...\n");
+
+	/* Boot from boot.json */
+	printf("Booting from boot.json...\n");
+	sataboot_from_json("boot.json");
+
+	/* Boot from boot.bin */
+	printf("Booting from boot.bin...\n");
+	sataboot_from_bin("boot.bin");
+
+	/* Boot failed if we are here... */
+	printf("SATA boot failed.\n");
 }
 #endif

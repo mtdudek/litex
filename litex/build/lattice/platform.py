@@ -1,9 +1,12 @@
-# This file is Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2017 William D. Jones <thor0505@comcast.net>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2017 William D. Jones <thor0505@comcast.net>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from litex.build.generic_platform import GenericPlatform
-from litex.build.lattice import common, diamond, icestorm, trellis
+from litex.build.lattice import common, diamond, icestorm, trellis, radiant, oxide
 
 # LatticePlatform ----------------------------------------------------------------------------------
 
@@ -19,6 +22,10 @@ class LatticePlatform(GenericPlatform):
         elif toolchain == "icestorm":
             self.bitstream_ext = ".bin"
             self.toolchain = icestorm.LatticeIceStormToolchain()
+        elif toolchain == "radiant":
+            self.toolchain = radiant.LatticeRadiantToolchain()
+        elif toolchain == "oxide":
+            self.toolchain = oxide.LatticeOxideToolchain()
         else:
             raise ValueError("Unknown toolchain")
 
@@ -26,9 +33,11 @@ class LatticePlatform(GenericPlatform):
         so = dict()  # No common overrides between ECP5 and iCE40.
         so.update(self.toolchain.special_overrides)
         so.update(special_overrides)
-        return GenericPlatform.get_verilog(self, *args, special_overrides=so,
-                                           attr_translate=self.toolchain.attr_translate,
-                                           **kwargs)
+        return GenericPlatform.get_verilog(self, *args,
+            special_overrides = so,
+            attr_translate    = self.toolchain.attr_translate,
+            **kwargs)
+
 
     def build(self, *args, **kwargs):
         return self.toolchain.build(self, *args, **kwargs)

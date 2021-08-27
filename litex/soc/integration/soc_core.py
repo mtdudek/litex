@@ -1,21 +1,20 @@
+#
+# This file is part of LiteX.
+#
 # This file is Copyright (c) 2013-2014 Sebastien Bourdeauducq <sb@m-labs.hk>
 # This file is Copyright (c) 2014-2019 Florent Kermarrec <florent@enjoy-digital.fr>
 # This file is Copyright (c) 2018 Dolu1990 <charles.papon.90@gmail.com>
 # This file is Copyright (c) 2019 Gabriel L. Somlo <gsomlo@gmail.com>
 # This file is Copyright (c) 2019 Ilia Sergachev <ilia.sergachev@protonmail.ch>
 # This file is Copyright (c) 2018 Jean-François Nguyen <jf@lambdaconcept.fr>
+# This file is Copyright (c) 2020 Raptor Engineering, LLC <sales@raptorengineering.com>
 # This file is Copyright (c) 2015 Robert Jordens <jordens@gmail.com>
 # This file is Copyright (c) 2018 Sean Cross <sean@xobs.io>
 # This file is Copyright (c) 2018 Stafford Horne <shorne@gmail.com>
 # This file is Copyright (c) 2018-2017 Tim 'mithro' Ansell <me@mith.ro>
 # This file is Copyright (c) 2015 whitequark <whitequark@whitequark.org>
 # This file is Copyright (c) 2014 Yann Sionneau <ys@m-labs.hk>
-# License: BSD
-
-####################################################################################################
-#       DISCLAIMER: Provides retro-compatibility layer for existing SoCCore based designs.
-#     Most of the SoC code has been refactored/improved and is now located in integration/soc.py
-####################################################################################################
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 import inspect
@@ -50,14 +49,13 @@ def mem_decoder(address, size=0x10000000):
 # SoCCore ------------------------------------------------------------------------------------------
 
 class SoCCore(LiteXSoC):
-    # default register/interrupt/memory mappings (can be redefined by user)
+    # Default register/interrupt/memory mappings (can be redefined by user)
     csr_map       = {}
     interrupt_map = {}
     mem_map       = {
         "rom":      0x00000000,
         "sram":     0x01000000,
         "main_ram": 0x40000000,
-        "csr":      0x82000000,
     }
 
     def __init__(self, platform, clk_freq,
@@ -66,37 +64,56 @@ class SoCCore(LiteXSoC):
         bus_data_width           = 32,
         bus_address_width        = 32,
         bus_timeout              = 1e6,
+
         # CPU parameters
         cpu_type                 = "vexriscv",
         cpu_reset_address        = None,
         cpu_variant              = None,
         cpu_cls                  = None,
+        cpu_cfu                  = None,
+
+        # CFU parameters
+        cfu_filename             = None,
+
         # ROM parameters
         integrated_rom_size      = 0,
+        integrated_rom_mode      = "r",
         integrated_rom_init      = [],
+
         # SRAM parameters
         integrated_sram_size     = 0x2000,
         integrated_sram_init     = [],
+
         # MAIN_RAM parameters
         integrated_main_ram_size = 0,
         integrated_main_ram_init = [],
+
         # CSR parameters
-        csr_data_width           = 8,
+        csr_data_width           = 32,
         csr_address_width        = 14,
         csr_paging               = 0x800,
+        csr_ordering             = "big",
+
+        # Interrupt parameters
+        irq_n_irqs               = 32,
+
         # Identifier parameters
         ident                    = "",
         ident_version            = False,
+
         # UART parameters
         with_uart                = True,
         uart_name                = "serial",
         uart_baudrate            = 115200,
         uart_fifo_depth          = 16,
+
         # Timer parameters
         with_timer               = True,
         timer_uptime             = False,
+
         # Controller parameters
         with_ctrl                = True,
+
         # Others
         **kwargs):
 
@@ -111,9 +128,10 @@ class SoCCore(LiteXSoC):
             csr_data_width       = csr_data_width,
             csr_address_width    = csr_address_width,
             csr_paging           = csr_paging,
+            csr_ordering         = csr_ordering,
             csr_reserved_csrs    = self.csr_map,
 
-            irq_n_irqs           = 32,
+            irq_n_irqs           = irq_n_irqs,
             irq_reserved_irqs    = {},
         )
 
@@ -124,20 +142,38 @@ class SoCCore(LiteXSoC):
         self.config      = {}
 
         # Parameters management --------------------------------------------------------------------
+
+        # CPU.
         cpu_type          = None if cpu_type == "None" else cpu_type
         cpu_reset_address = None if cpu_reset_address == "None" else cpu_reset_address
 
-        self.cpu_type                   = cpu_type
-        self.cpu_variant                = cpu_variant
-        self.cpu_cls                    = cpu_cls
+        self.cpu_type     = cpu_type
+        self.cpu_variant  = cpu_variant
+        self.cpu_cls      = cpu_cls
 
+        # ROM.
+        # Initialize ROM from binary file when provided.
+        if isinstance(integrated_rom_init, str):
+            integrated_rom_init = get_mem_data(integrated_rom_init, "little") # FIXME: Endianness.
+            integrated_rom_size = 4*len(integrated_rom_init)
+
+        # Disable ROM when no CPU/hard-CPU.
+        if cpu_type in [None, "zynq7000"]:
+            integrated_rom_init = []
+            integrated_rom_size = 0
         self.integrated_rom_size        = integrated_rom_size
         self.integrated_rom_initialized = integrated_rom_init != []
-        self.integrated_sram_size       = integrated_sram_size
-        self.integrated_main_ram_size   = integrated_main_ram_size
 
-        self.csr_data_width             = csr_data_width
+        # SRAM.
+        self.integrated_sram_size = integrated_sram_size
 
+        # MAIN RAM.
+        self.integrated_main_ram_size = integrated_main_ram_size
+
+        # CSRs.
+        self.csr_data_width = csr_data_width
+
+        # Wishbone Slaves.
         self.wb_slaves = {}
 
         # Modules instances ------------------------------------------------------------------------
@@ -150,16 +186,18 @@ class SoCCore(LiteXSoC):
         self.add_cpu(
             name          = str(cpu_type),
             variant       = "standard" if cpu_variant is None else cpu_variant,
+            reset_address = None if integrated_rom_size else cpu_reset_address,
             cls           = cpu_cls,
-            reset_address = None if integrated_rom_size else cpu_reset_address)
+            cfu           = cpu_cfu)
 
         # Add User's interrupts
-        for name, loc in self.interrupt_map.items():
-            self.irq.add(name, loc)
+        if self.irq.enabled:
+            for name, loc in self.interrupt_map.items():
+                self.irq.add(name, loc)
 
         # Add integrated ROM
         if integrated_rom_size:
-            self.add_rom("rom", self.cpu.reset_address, integrated_rom_size, integrated_rom_init)
+            self.add_rom("rom", self.cpu.reset_address, integrated_rom_size, integrated_rom_init, integrated_rom_mode)
 
         # Add integrated SRAM
         if integrated_sram_size:
@@ -183,9 +221,6 @@ class SoCCore(LiteXSoC):
             if timer_uptime:
                 self.timer0.add_uptime()
 
-        # Add CSR bridge
-        self.add_csr_bridge(self.mem_map["csr"])
-
     # Methods --------------------------------------------------------------------------------------
 
     def add_interrupt(self, interrupt_name, interrupt_id=None, use_loc_if_exists=False):
@@ -195,7 +230,7 @@ class SoCCore(LiteXSoC):
         self.csr.add(csr_name, csr_id, use_loc_if_exists=use_loc_if_exists)
 
     def initialize_rom(self, data):
-        self.rom.mem.init = data
+        self.init_rom(name="rom", contents=data)
 
     def add_wb_master(self, wbm):
         self.bus.add_master(master=wbm)
@@ -251,59 +286,57 @@ class SoCCore(LiteXSoC):
 # SoCCore arguments --------------------------------------------------------------------------------
 
 def soc_core_args(parser):
+    # Bus parameters
+    parser.add_argument("--bus-standard",      default="wishbone",                help="Select bus standard: {}, (default=wishbone).".format(", ".join(SoCBusHandler.supported_standard)))
+    parser.add_argument("--bus-data-width",    default=32,         type=auto_int, help="Bus data-width (default=32).")
+    parser.add_argument("--bus-address-width", default=32,         type=auto_int, help="Bus address-width (default=32).")
+    parser.add_argument("--bus-timeout",       default=1e6,        type=float,    help="Bus timeout in cycles (default=1e6).")
+
     # CPU parameters
-    parser.add_argument("--cpu-type", default=None,
-                        help="select CPU: {}, (default=vexriscv)".format(", ".join(iter(cpu.CPUS.keys()))))
-    parser.add_argument("--cpu-variant", default=None,
-                        help="select CPU variant, (default=standard)")
-    parser.add_argument("--cpu-reset-address", default=None, type=auto_int,
-                        help="CPU reset address (default=None (Integrated ROM)")
-    # ROM parameters
-    parser.add_argument("--integrated-rom-size", default=0x8000, type=auto_int,
-                        help="size/enable the integrated (BIOS) ROM (default=32KB)")
-    parser.add_argument("--integrated-rom-file", default=None, type=str,
-                        help="integrated (BIOS) ROM binary file")
-    # SRAM parameters
-    parser.add_argument("--integrated-sram-size", default=0x2000, type=auto_int,
-                        help="size/enable the integrated SRAM (default=8KB)")
-    # MAIN_RAM parameters
-    parser.add_argument("--integrated-main-ram-size", default=None, type=auto_int,
-                        help="size/enable the integrated main RAM")
-    # CSR parameters
-    parser.add_argument("--csr-data-width", default=None, type=auto_int,
-                        help="CSR bus data-width (8 or 32, default=8)")
-    parser.add_argument("--csr-address-width", default=14, type=auto_int,
-                        help="CSR bus address-width")
-    parser.add_argument("--csr-paging", default=0x800, type=auto_int,
-                        help="CSR bus paging")
-    # Identifier parameters
-    parser.add_argument("--ident", default=None, type=str,
-                        help="SoC identifier (default=\"\"")
-    parser.add_argument("--ident-version", default=None, type=bool,
-                        help="add date/time to SoC identifier (default=False)")
-    # UART parameters
-    parser.add_argument("--no-uart", action="store_true",
-                        help="Disable UART (default=False)")
-    parser.add_argument("--uart-name", default="serial", type=str,
-                        help="UART type/name (default=serial)")
-    parser.add_argument("--uart-baudrate", default=None, type=auto_int,
-                        help="UART baudrate (default=115200)")
-    parser.add_argument("--uart-fifo-depth", default=16, type=auto_int,
-                        help="UART FIFO depth (default=16)")
-    # Timer parameters
-    parser.add_argument("--no-timer", action="store_true",
-                        help="Disable Timer (default=False)")
+    parser.add_argument("--cpu-type",          default=None,                     help="Select CPU: {}, (default=vexriscv).".format(", ".join(iter(cpu.CPUS.keys()))))
+    parser.add_argument("--cpu-variant",       default=None,                     help="CPU variant (default=standard).")
+    parser.add_argument("--cpu-reset-address", default=None,      type=auto_int, help="CPU reset address (default=None : Boot from Integrated ROM).")
+    parser.add_argument("--cpu-cfu",           default=None,                     help="Optional CPU CFU file/instance to add to the CPU.")
+
     # Controller parameters
-    parser.add_argument("--no-ctrl", action="store_true",
-                        help="Disable Controller (default=False)")
+    parser.add_argument("--no-ctrl", action="store_true", help="Disable Controller (default=False).")
+
+    # ROM parameters
+    parser.add_argument("--integrated-rom-size", default=0x20000, type=auto_int, help="Size/Enable the integrated (BIOS) ROM (default=128KB, automatically resized to BIOS size when smaller).")
+    parser.add_argument("--integrated-rom-init", default=None,    type=str,      help="Integrated ROM binary initialization file (override the BIOS when specified).")
+
+    # SRAM parameters
+    parser.add_argument("--integrated-sram-size", default=0x2000, type=auto_int, help="Size/Enable the integrated SRAM (default=8KB).")
+
+    # MAIN_RAM parameters
+    parser.add_argument("--integrated-main-ram-size", default=None, type=auto_int, help="size/enable the integrated main RAM")
+
+    # CSR parameters
+    parser.add_argument("--csr-data-width",    default=None,  type=auto_int, help="CSR bus data-width (8 or 32, default=32).")
+    parser.add_argument("--csr-address-width", default=14,    type=auto_int, help="CSR bus address-width.")
+    parser.add_argument("--csr-paging",        default=0x800, type=auto_int, help="CSR bus paging.")
+    parser.add_argument("--csr-ordering",      default="big",                help="CSR registers ordering (default=big).")
+
+    # Identifier parameters
+    parser.add_argument("--ident",             default=None,  type=str,  help="SoC identifier (default=\"\").")
+    parser.add_argument("--ident-version",     default=None,  type=bool, help="Add date/time to SoC identifier (default=False)")
+
+    # UART parameters
+    parser.add_argument("--no-uart",         action="store_true",                help="Disable UART (default=False).")
+    parser.add_argument("--uart-name",       default="serial",    type=str,      help="UART type/name (default=serial).")
+    parser.add_argument("--uart-baudrate",   default=None,        type=auto_int, help="UART baudrate (default=115200).")
+    parser.add_argument("--uart-fifo-depth", default=16,          type=auto_int, help="UART FIFO depth (default=16).")
+
+    # Timer parameters
+    parser.add_argument("--no-timer",        action="store_true", help="Disable Timer (default=False).")
+    parser.add_argument("--timer-uptime",    action="store_true", help="Add an uptime capability to Timer (default=False).")
+
+    # L2 Cache
+    parser.add_argument("--l2-size",           default=8192, type=auto_int, help="L2 cache size (default=8192).")
 
 def soc_core_argdict(args):
     r = dict()
-    rom_file = getattr(args, "integrated_rom_file", None)
-    if rom_file is not None:
-        args.integrated_rom_init = get_mem_data(rom_file, "little") # FIXME: endianness
-        args.integrated_rom_size = len(args.integrated_rom_init)*4
-    for a in inspect.getargspec(SoCCore.__init__).args:
+    for a in inspect.getfullargspec(SoCCore.__init__).args:
         if a not in ["self", "platform"]:
             if a in ["with_uart", "with_timer", "with_ctrl"]:
                 arg = not getattr(args, a.replace("with", "no"), True)

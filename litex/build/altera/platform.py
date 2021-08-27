@@ -1,6 +1,9 @@
-# This file is Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2019 msloniewski <marcin.sloniewski@gmail.com>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2019 msloniewski <marcin.sloniewski@gmail.com>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 
@@ -27,7 +30,11 @@ class AlteraPlatform(GenericPlatform):
     def get_verilog(self, *args, special_overrides=dict(), **kwargs):
         so = dict(common.altera_special_overrides)
         so.update(special_overrides)
-        return GenericPlatform.get_verilog(self, *args, special_overrides=so, **kwargs)
+        return GenericPlatform.get_verilog(self, *args,
+            special_overrides = so,
+            attr_translate    = self.toolchain.attr_translate,
+            **kwargs)
+
 
     def build(self, *args, **kwargs):
         return self.toolchain.build(self, *args, **kwargs)

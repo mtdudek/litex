@@ -1,5 +1,8 @@
-# This file is Copyright (c) 2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import unittest
 import random
@@ -20,13 +23,20 @@ class Burst:
 
     def to_beats(self):
         r = []
-        for i in range(self.len + 1):
+        burst_length = self.len + 1
+        burst_size   = 2**self.size
+        for i in range(burst_length):
             if self.type == BURST_INCR:
                 offset = i*2**(self.size)
                 r += [Beat(self.addr + offset)]
             elif self.type == BURST_WRAP:
-                offset = (i*2**(self.size))%((2**self.size)*(self.len + 1))
-                r += [Beat(self.addr + offset)]
+                assert burst_length in [2, 4, 8, 16]
+                assert (self.addr % burst_size) == 0
+                burst_base   = self.addr - self.addr % (burst_length * burst_size)
+                burst_offset = self.addr % (burst_length * burst_size)
+                burst_addr   = burst_base + (burst_offset + i*burst_size) % (burst_length * burst_size)
+                #print("0x{:08x}".format(burst_addr))
+                r += [Beat(burst_addr)]
             else:
                 r += [Beat(self.addr)]
         return r
@@ -51,7 +61,7 @@ class Write(Access):
 class Read(Access):
     pass
 
-# Tests --------------------------------------------------------------------------------------------
+# TestAXI ------------------------------------------------------------------------------------------
 
 class TestAXI(unittest.TestCase):
     def test_burst2beat(self):
@@ -83,6 +93,7 @@ class TestAXI(unittest.TestCase):
                         yield ax.ready.eq(0)
                     yield
                 ax_addr = (yield ax.addr)
+                #print("0x{:08x}".format(ax_addr))
                 if ax_addr != beat.addr:
                     self.errors += 1
                 yield
@@ -99,6 +110,7 @@ class TestAXI(unittest.TestCase):
             bursts.append(Burst(prng.randrange(2**32), BURST_FIXED, prng.randrange(255), log2_int(32//8)))
             bursts.append(Burst(prng.randrange(2**32), BURST_INCR, prng.randrange(255), log2_int(32//8)))
         bursts.append(Burst(4, BURST_WRAP, 4-1, log2_int(2)))
+        bursts.append(Burst(0x80000160, BURST_WRAP, 0x3, 0b100))
 
         # generate expected dut output (beats for reference)
         beats = []
@@ -237,7 +249,7 @@ class TestAXI(unittest.TestCase):
         class DUT(Module):
             def __init__(self):
                 self.axi      = AXIInterface(data_width=32, address_width=32, id_width=8)
-                self.wishbone = wishbone.Interface(data_width=32)
+                self.wishbone = wishbone.Interface(data_width=32, adr_width=30)
 
                 axi2wishbone = AXI2Wishbone(self.axi, self.wishbone)
                 self.submodules += axi2wishbone
@@ -326,37 +338,3 @@ class TestAXI(unittest.TestCase):
             r_valid_random  = 90,
             r_ready_random  = 90
         )
-
-    def test_wishbone2axi2wishbone(self):
-        class DUT(Module):
-            def __init__(self):
-                self.wishbone = wishbone.Interface(data_width=32)
-
-                # # #
-
-                axi = AXILiteInterface(data_width=32, address_width=32)
-                wb  = wishbone.Interface(data_width=32)
-
-                wishbone2axi = Wishbone2AXILite(self.wishbone, axi)
-                axi2wishbone = AXILite2Wishbone(axi, wb)
-                self.submodules += wishbone2axi, axi2wishbone
-
-                sram = wishbone.SRAM(1024, init=[0x12345678, 0xa55aa55a])
-                self.submodules += sram
-                self.comb += wb.connect(sram.bus)
-
-        def generator(dut):
-            dut.errors = 0
-            if (yield from dut.wishbone.read(0)) != 0x12345678:
-                dut.errors += 1
-            if (yield from dut.wishbone.read(1)) != 0xa55aa55a:
-                dut.errors += 1
-            for i in range(32):
-                yield from dut.wishbone.write(i, i)
-            for i in range(32):
-                if (yield from dut.wishbone.read(i)) != i:
-                    dut.errors += 1
-
-        dut = DUT()
-        run_simulation(dut, [generator(dut)], vcd_name="toto.vcd")
-        self.assertEqual(dut.errors, 0)

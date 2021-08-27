@@ -13,9 +13,6 @@
 #include <string.h>
 #include <ctype.h>
 
-#include <console.h>
-#include <uart.h>
-
 #include "readline.h"
 #include "complete.h"
 
@@ -54,15 +51,15 @@ static int read_key(void)
 {
 	char c;
 	char esc[5];
-	c = readchar();
+	c = getchar();
 
 	if (c == 27) {
 		int i = 0;
-		esc[i++] = readchar();
-		esc[i++] = readchar();
+		esc[i++] = getchar();
+		esc[i++] = getchar();
 		if (isdigit(esc[1])) {
 			while(1) {
-				esc[i] = readchar();
+				esc[i] = getchar();
 				if (esc[i++] == '~')
 					break;
 				if (i == ARRAY_SIZE(esc))
@@ -150,10 +147,10 @@ void hist_init(void)
 }
 #endif
 
-static void cread_add_char(char ichar, int insert, unsigned long *num,
-			   unsigned long *eol_num, char *buf, unsigned long len)
+static void cread_add_char(char ichar, int insert, unsigned int *num,
+			   unsigned int *eol_num, char *buf, unsigned int len)
 {
-	unsigned long wlen;
+	unsigned int wlen;
 
 	if (insert || *num == *eol_num) {
 		if (*eol_num > len - 1) {
@@ -186,11 +183,11 @@ static void cread_add_char(char ichar, int insert, unsigned long *num,
 
 int readline(char *buf, int len)
 {
-	unsigned long num = 0;
-	unsigned long eol_num = 0;
-	unsigned long wlen;
+	unsigned int num = 0;
+	unsigned int eol_num = 0;
+	unsigned int wlen;
 	int insert = 1;
-	char ichar;
+	unsigned char ichar;
 
 #ifndef TERM_NO_COMPLETE
 	char tmp;
@@ -254,7 +251,7 @@ int readline(char *buf, int len)
 				wlen = eol_num - num - 1;
 				if (wlen) {
 					memmove(&buf[num], &buf[num+1], wlen);
-					putnstr(buf + num, (int)wlen);
+					putnstr(buf + num, wlen);
 				}
 
 				getcmd_putch(' ');
@@ -286,7 +283,7 @@ int readline(char *buf, int len)
 				num--;
 				memmove(buf + num, buf + num + 1, wlen);
 				getcmd_putch(CTL_BACKSPACE);
-				putnstr(buf + num, (int)wlen);
+				putnstr(buf + num, wlen);
 				getcmd_putch(' ');
 				do {
 					getcmd_putch(CTL_BACKSPACE);
@@ -298,7 +295,7 @@ int readline(char *buf, int len)
 			if (num < eol_num) {
 				wlen = eol_num - num;
 				memmove(buf + num, buf + num + 1, wlen);
-				putnstr(buf + num, (int)(wlen - 1));
+				putnstr(buf + num, wlen - 1);
 				getcmd_putch(' ');
 				do {
 					getcmd_putch(CTL_BACKSPACE);

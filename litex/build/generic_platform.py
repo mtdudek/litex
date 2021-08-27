@@ -1,11 +1,16 @@
-# This file is Copyright (c) 2013-2014 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2014-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2015 Yann Sionneau <ys@m-labs.hk>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2013-2014 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2014-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2015 Yann Sionneau <ys@m-labs.hk>
+# SPDX-License-Identifier: BSD-2-Clause
 
+import sys
 import os
+import re
 
-from migen.fhdl.structure import Signal
+from migen.fhdl.structure import Signal, Cat
 from migen.genlib.record import Record
 
 from litex.gen.fhdl import verilog
@@ -13,10 +18,13 @@ from litex.gen.fhdl import verilog
 from litex.build.io import CRG
 from litex.build import tools
 
+# --------------------------------------------------------------------------------------------------
 
 class ConstraintError(Exception):
     pass
 
+
+# IOS ----------------------------------------------------------------------------------------------
 
 class Pins:
     def __init__(self, *identifiers):
@@ -28,8 +36,7 @@ class Pins:
                 self.identifiers += i.split()
 
     def __repr__(self):
-        return "{}('{}')".format(self.__class__.__name__,
-                                 " ".join(self.identifiers))
+        return "{}('{}')".format(self.__class__.__name__, " ".join(self.identifiers))
 
 
 class IOStandard:
@@ -64,15 +71,15 @@ class Inverted:
 
 class Subsignal:
     def __init__(self, name, *constraints):
-        self.name = name
+        self.name        = name
         self.constraints = list(constraints)
 
     def __repr__(self):
-        return "{}('{}', {})".format(
-            self.__class__.__name__,
+        return "{}('{}', {})".format(self.__class__.__name__,
             self.name,
             ", ".join([repr(constr) for constr in self.constraints]))
 
+# Platform -----------------------------------------------------------------------------------------
 
 class PlatformInfo:
     def __init__(self, info):
@@ -82,11 +89,14 @@ class PlatformInfo:
         return "{}({})".format(self.__class__.__name__, repr(self.info))
 
 
-def _lookup(description, name, number):
+def _lookup(description, name, number, loose=True):
     for resource in description:
         if resource[0] == name and (number is None or resource[1] == number):
             return resource
-    raise ConstraintError("Resource not found: {}:{}".format(name, number))
+    if loose:
+        return None
+    else:
+        raise ConstraintError("Resource not found: {}:{}".format(name, number))
 
 
 def _resource_type(resource):
@@ -103,7 +113,7 @@ def _resource_type(resource):
                 i = []
 
             assert(isinstance(t, list))
-            n_bits = None
+            n_bits   = None
             inverted = False
             for c in element.constraints:
                 if isinstance(c, Pins):
@@ -117,12 +127,13 @@ def _resource_type(resource):
 
     return t, i
 
+# Connector Manager --------------------------------------------------------------------------------
 
 class ConnectorManager:
     def __init__(self, connectors):
         self.connector_table = dict()
         for connector in connectors:
-            cit = iter(connector)
+            cit       = iter(connector)
             conn_name = next(cit)
             if isinstance(connector[1], str):
                 pin_list = []
@@ -156,7 +167,7 @@ class ConnectorManager:
 
 
 def _separate_pins(constraints):
-    pins = None
+    pins   = None
     others = []
     for c in constraints:
         if isinstance(c, Pins):
@@ -167,19 +178,22 @@ def _separate_pins(constraints):
 
     return pins, others
 
+# Constraint Manager -------------------------------------------------------------------------------
 
 class ConstraintManager:
     def __init__(self, io, connectors):
-        self.available = list(io)
-        self.matched = []
+        self.available         = list(io)
+        self.matched           = []
         self.platform_commands = []
         self.connector_manager = ConnectorManager(connectors)
 
     def add_extension(self, io):
         self.available.extend(io)
 
-    def request(self, name, number=None):
-        resource = _lookup(self.available, name, number)
+    def request(self, name, number=None, loose=False):
+        resource = _lookup(self.available, name, number, loose)
+        if resource is None:
+            return None
         rt, ri = _resource_type(resource)
         if number is None:
             resource_name = name
@@ -204,6 +218,17 @@ class ConstraintManager:
         self.available.remove(resource)
         self.matched.append((resource, obj))
         return obj
+
+    def request_all(self, name):
+        r = []
+        while True:
+            try:
+                r.append(self.request(name, len(r)))
+            except ConstraintError:
+                break
+        if not len(r):
+            raise ValueError
+        return Cat(r)
 
     def lookup_request(self, name, number=None, loose=False):
         subname = None
@@ -237,9 +262,9 @@ class ConstraintManager:
     def get_sig_constraints(self):
         r = []
         for resource, obj in self.matched:
-            name = resource[0]
-            number = resource[1]
-            has_subsignals = False
+            name            = resource[0]
+            number          = resource[1]
+            has_subsignals  = False
             top_constraints = []
             for element in resource[2:]:
                 if isinstance(element, Subsignal):
@@ -266,22 +291,30 @@ class ConstraintManager:
     def get_platform_commands(self):
         return self.platform_commands
 
+# Generic Platform ---------------------------------------------------------------------------------
 
 class GenericPlatform:
     def __init__(self, device, io, connectors=[], name=None):
-        self.device = device
+        self.device             = device
         self.constraint_manager = ConstraintManager(io, connectors)
         if name is None:
+            # Get name from Platform file.
             name = self.__module__.split(".")[-1]
-        self.name = name
-        self.sources = []
+        if name == "__main__":
+            # If no Platform file, use script filename,
+            name = os.path.splitext(os.path.basename(sys.argv[0]))[0]
+        self.name                  = name
+        self.sources               = []
         self.verilog_include_paths = []
-        self.output_dir = None
-        self.finalized = False
-        self.use_default_clk = False
+        self.output_dir            = None
+        self.finalized             = False
+        self.use_default_clk       = False
 
     def request(self, *args, **kwargs):
         return self.constraint_manager.request(*args, **kwargs)
+
+    def request_all(self, *args, **kwargs):
+        return self.constraint_manager.request_all(*args, **kwargs)
 
     def lookup_request(self, *args, **kwargs):
         return self.constraint_manager.lookup_request(*args, **kwargs)
@@ -307,22 +340,21 @@ class GenericPlatform:
     def finalize(self, fragment, *args, **kwargs):
         if self.finalized:
             raise ConstraintError("Already finalized")
-        # if none exists, create a default clock domain and drive it
+        # If none exists, create a default clock domain and drive it.
         if not fragment.clock_domains:
             if not hasattr(self, "default_clk_name"):
                 raise NotImplementedError(
                     "No default clock and no clock domain defined")
             crg = CRG(self.request(self.default_clk_name))
             fragment += crg.get_fragment()
-            self.user_default_clk = True
+            self.use_default_clk = True
 
         self.do_finalize(fragment, *args, **kwargs)
         self.finalized = True
 
     def do_finalize(self, fragment, *args, **kwargs):
-        """overload this and e.g. add_platform_command()'s after the modules
-        had their say"""
-        if self.use_default_clk:
+        # Overload this and e.g. add_platform_command()'s after the modules had their say.
+        if self.use_default_clk and hasattr(self, "default_clk_period"):
             try:
                 self.add_period_constraint(
                     self.lookup_request(self.default_clk_name),
@@ -365,11 +397,11 @@ class GenericPlatform:
         self.verilog_include_paths.append(os.path.abspath(path))
 
     def resolve_signals(self, vns):
-        # resolve signal names in constraints
+        # Resolve signal names in constraints.
         sc = self.constraint_manager.get_sig_constraints()
         named_sc = [(vns.get_name(sig), pins, others, resource)
                     for sig, pins, others, resource in sc]
-        # resolve signal names in platform commands
+        # Resolve signal names in platform commands.
         pc = self.constraint_manager.get_platform_commands()
         named_pc = []
         for template, args in pc:

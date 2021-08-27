@@ -1,7 +1,12 @@
-# This file is Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2017 William D. Jones <thor0505@comcast.net>
-# This file is Copyright (c) 2019 David Shah <dave@ds0.me>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2017 William D. Jones <thor0505@comcast.net>
+# Copyright (c) 2019 David Shah <dave@ds0.me>
+# Copyright (c) 2020 David Corrigan <davidcorrigan714@gmail.com>
+# Copyright (c) 2021 Charles-Henri Mousset <ch.mousset@gmail.com>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from migen.fhdl.module import Module
 from migen.fhdl.specials import Instance, Tristate
@@ -101,6 +106,36 @@ class LatticeECP5DDROutput:
     def lower(dr):
         return LatticeECP5DDROutputImpl(dr.i1, dr.i2, dr.o, dr.clk)
 
+# ECP5 Differential Input --------------------------------------------------------------------------
+
+class LatticeECP5DifferentialInputImpl(Module):
+    def __init__(self, i_p, i_n, o):
+        self.specials += Instance("ILVDS",
+            i_A  = i_p,
+            i_AN = i_n,
+            o_Z  = o,
+        )
+
+class LatticeECP5DifferentialInput:
+    @staticmethod
+    def lower(dr):
+        return LatticeECP5DifferentialInputImpl(dr.i_p, dr.i_n, dr.o)
+
+# ECP5 Differential Output -------------------------------------------------------------------------
+
+class LatticeECP5DifferentialOutputImpl(Module):
+    def __init__(self, i, o_p, o_n):
+        self.specials += Instance("OLVDS",
+            i_A  = i,
+            o_Z  = o_p,
+            o_ZN = o_n,
+        )
+
+class LatticeECP5DifferentialOutput:
+    @staticmethod
+    def lower(dr):
+        return LatticeECP5DifferentialOutputImpl(dr.i, dr.o_p, dr.o_n)
+
 # ECP5 Special Overrides ---------------------------------------------------------------------------
 
 lattice_ecp5_special_overrides = {
@@ -109,6 +144,8 @@ lattice_ecp5_special_overrides = {
     SDROutput:              LatticeECP5SDROutput,
     DDRInput:               LatticeECP5DDRInput,
     DDROutput:              LatticeECP5DDROutput,
+    DifferentialInput:      LatticeECP5DifferentialInput,
+    DifferentialOutput:     LatticeECP5DifferentialOutput,
 }
 
 # ECP5 Trellis Tristate ----------------------------------------------------------------------------
@@ -138,10 +175,146 @@ lattice_ecp5_trellis_special_overrides = {
     SDRInput:               LatticeECP5SDRInput,
     SDROutput:              LatticeECP5SDROutput,
     DDRInput:               LatticeECP5DDRInput,
-    DDROutput:              LatticeECP5DDROutput
+    DDROutput:              LatticeECP5DDROutput,
+    DifferentialInput:      LatticeECP5DifferentialInput,
 }
 
-# iCE40 AsyncResetSynchronizer ----------------------------------------------------------------------
+
+# NX AsyncResetSynchronizer ------------------------------------------------------------------------
+
+class LatticeNXsyncResetSynchronizerImpl(Module):
+    def __init__(self, cd, async_reset):
+        rst1 = Signal()
+        self.specials += [
+            Instance("FD1P3BX",
+                i_D  = 0,
+                i_PD = async_reset,
+                i_CK = cd.clk,
+                i_SP = 1,
+                o_Q  = rst1),
+            Instance("FD1P3BX",
+                i_D  = rst1,
+                i_PD = async_reset,
+                i_CK = cd.clk,
+                i_SP = 1,
+                o_Q  = cd.rst)
+        ]
+
+
+class LatticeNXAsyncResetSynchronizer:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXsyncResetSynchronizerImpl(dr.cd, dr.async_reset)
+
+
+# NX SDR Input -------------------------------------------------------------------------------------
+
+class LatticeNXSDRInputImpl(Module):
+    def __init__(self, i, o, clk):
+        self.specials += Instance("IFD1P3BX",
+            i_CK = clk,
+            i_PD   = 0,
+            i_SP   = 1,
+            i_D    = i,
+            o_Q    = o,
+        )
+
+class LatticeNXSDRInput:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXSDRInputImpl(dr.i, dr.o, dr.clk)
+
+# NX SDR Output ------------------------------------------------------------------------------------
+
+class LatticeNXSDROutputImpl(Module):
+    def __init__(self, i, o, clk):
+        self.specials += Instance("OFD1P3BX",
+            i_CK = clk,
+            i_PD   = 0,
+            i_SP   = 1,
+            i_D    = i,
+            o_Q    = o,
+        )
+
+class LatticeNXSDROutput:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXSDROutputImpl(dr.i, dr.o, dr.clk)
+
+# NX SDR Input and Output via regular flip-flops ---------------------------------------------------
+
+# This is a workaround for IO-specific primitives IFD1P3BX / OFD1P3BX being unsupported in nextpnr:
+# https://github.com/YosysHQ/nextpnr/issues/698
+
+class LatticeNXSDRFFImpl(Module):
+    def __init__(self, i, o, clk):
+        self.specials += Instance("FD1P3BX",
+            i_CK = clk,
+            i_PD   = 0,
+            i_SP   = 1,
+            i_D    = i,
+            o_Q    = o,
+        )
+
+class LatticeNXSDRInputViaFlipFlop:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXSDRFFImpl(dr.i, dr.o, dr.clk)
+
+class LatticeNXSDROutputViaFlipFlop:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXSDRFFImpl(dr.i, dr.o, dr.clk)
+
+# NX DDR Input -------------------------------------------------------------------------------------
+
+class LatticeNXDDRInputImpl(Module):
+    def __init__(self, i, o1, o2, clk):
+        self.specials += Instance("IDDRX1",
+            i_SCLK = clk,
+            i_D    = i,
+            o_Q0   = o1,
+            o_Q1   = o2,
+        )
+
+class LatticeNXDDRInput:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXDDRInputImpl(dr.i, dr.o1, dr.o2, dr.clk)
+
+# NX DDR Output ------------------------------------------------------------------------------------
+
+class LatticeNXDDROutputImpl(Module):
+    def __init__(self, i1, i2, o, clk):
+        self.specials += Instance("ODDRX1",
+            i_SCLK = clk,
+            i_D0   = i1,
+            i_D1   = i2,
+            o_Q    = o,
+        )
+
+class LatticeNXDDROutput:
+    @staticmethod
+    def lower(dr):
+        return LatticeNXDDROutputImpl(dr.i1, dr.i2, dr.o, dr.clk)
+
+# NX Special Overrides -----------------------------------------------------------------------------
+
+lattice_NX_special_overrides = {
+    AsyncResetSynchronizer: LatticeNXAsyncResetSynchronizer,
+    SDRInput:               LatticeNXSDRInput,
+    SDROutput:              LatticeNXSDROutput,
+    DDRInput:               LatticeNXDDRInput,
+    DDROutput:              LatticeNXDDROutput,
+}
+
+lattice_NX_special_overrides_for_oxide = dict(lattice_NX_special_overrides)
+lattice_NX_special_overrides_for_oxide.update({
+    SDRInput:               LatticeNXSDRInputViaFlipFlop,
+    SDROutput:              LatticeNXSDROutputViaFlipFlop,
+})
+
+# iCE40 AsyncResetSynchronizer ---------------------------------------------------------------------
 
 class LatticeiCE40AsyncResetSynchronizerImpl(Module):
     def __init__(self, cd, async_reset):

@@ -1,6 +1,11 @@
-# This file is Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2019 Vamsi K Vytla <vkvytla@lbl.gov>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2019 Vamsi K Vytla <vkvytla@lbl.gov>
+# SPDX-License-Identifier: BSD-2-Clause
+
+from math import log2
 
 from migen import *
 from migen.genlib.roundrobin import *
@@ -20,13 +25,9 @@ class Status(Module):
         self.ongoing = Signal()
 
         ongoing = Signal()
-        self.comb += \
-            If(endpoint.valid,
-                self.last.eq(endpoint.last & endpoint.ready)
-            )
+        self.comb += If(endpoint.valid, self.last.eq(endpoint.last & endpoint.ready))
         self.sync += ongoing.eq((endpoint.valid | ongoing) & ~self.last)
         self.comb += self.ongoing.eq((endpoint.valid | ongoing) & ~self.last)
-
         self.sync += [
             If(self.last,
                 self.first.eq(1)
@@ -77,16 +78,18 @@ class Dispatcher(Module):
 
             sel = Signal.like(self.sel)
             sel_ongoing = Signal.like(self.sel)
-            self.sync += \
+            self.sync += [
                 If(status.first,
                     sel_ongoing.eq(self.sel)
                 )
-            self.comb += \
+            ]
+            self.comb += [
                 If(status.first,
                     sel.eq(self.sel)
                 ).Else(
                     sel.eq(sel_ongoing)
                 )
+            ]
             cases = {}
             for i, slave in enumerate(slaves):
                 if one_hot:
@@ -162,26 +165,36 @@ class Packetizer(Module):
 
         # # #
 
-        # Parameters -------------------------------------------------------------------------------
+        # Parameters.
         data_width      = len(self.sink.data)
         bytes_per_clk   = data_width//8
         header_words    = (header.length*8)//data_width
         header_leftover = header.length%bytes_per_clk
+        aligned         = header_leftover == 0
 
-        # Signals ----------------------------------------------------------------------------------
+        # Signals.
         sr       = Signal(header.length*8, reset_less=True)
         sr_load  = Signal()
         sr_shift = Signal()
         count    = Signal(max=max(header_words, 2))
         sink_d   = stream.Endpoint(sink_description)
 
-        # Header Encode/Load/Shift -----------------------------------------------------------------
+        # Header Encode/Load/Shift.
         self.comb += header.encode(sink, self.header)
         self.sync += If(sr_load, sr.eq(self.header))
         if header_words != 1:
             self.sync += If(sr_shift, sr.eq(sr[data_width:]))
 
-        # FSM --------------------------------------------------------------------------------------
+        # Last BE.
+        last_be   = Signal(data_width//8)
+        last_be_d = Signal(data_width//8)
+        if hasattr(sink, "last_be") and hasattr(source, "last_be"):
+            rotate_by = header.length%bytes_per_clk
+            x = [sink.last_be[(i + rotate_by)%bytes_per_clk] for i in range(bytes_per_clk)]
+            self.comb += last_be.eq(Cat(*x))
+            self.sync += last_be_d.eq(last_be)
+
+        # FSM.
         self.submodules.fsm = fsm = FSM(reset_state="IDLE")
         fsm_from_idle = Signal()
         fsm.act("IDLE",
@@ -196,11 +209,7 @@ class Packetizer(Module):
                     sr_load.eq(1),
                     NextValue(fsm_from_idle, 1),
                     If(header_words == 1,
-                        If(header_leftover != 0,
-                            NextState("UNALIGNED-DATA-COPY")
-                        ).Else(
-                            NextState("ALIGNED-DATA-COPY")
-                        )
+                        NextState("ALIGNED-DATA-COPY" if aligned else "UNALIGNED-DATA-COPY")
                     ).Else(
                         NextState("HEADER-SEND")
                     )
@@ -215,20 +224,18 @@ class Packetizer(Module):
                 sr_shift.eq(1),
                 If(count == (header_words - 1),
                     sr_shift.eq(0),
-                    If(header_leftover,
-                        NextState("UNALIGNED-DATA-COPY"),
-                        NextValue(count, count + 1)
-                    ).Else(
-                        NextState("ALIGNED-DATA-COPY")
-                    )
+                    NextState("ALIGNED-DATA-COPY" if aligned else "UNALIGNED-DATA-COPY"),
+                    NextValue(count, count + 1)
                ).Else(
                     NextValue(count, count + 1),
                )
             )
         )
+        source_last_be = getattr(source, "last_be", Signal())
         fsm.act("ALIGNED-DATA-COPY",
             source.valid.eq(sink.valid),
             source.last.eq(sink.last),
+            source_last_be.eq(last_be),
             source.data.eq(sink.data),
             If(source.valid & source.ready,
                sink.ready.eq(1),
@@ -237,35 +244,31 @@ class Packetizer(Module):
                )
             )
         )
-        header_offset_multiplier = 1 if header_words == 1 else 2
-        self.sync += If(source.ready, sink_d.eq(sink))
-        fsm.act("UNALIGNED-DATA-COPY",
-            source.valid.eq(sink.valid | sink_d.last),
-            source.last.eq(sink_d.last),
-            If(fsm_from_idle,
-                source.data[:max(header_leftover*8, 1)].eq(sr[min(header_offset_multiplier*data_width, len(sr)-1):])
-            ).Else(
-                source.data[:max(header_leftover*8, 1)].eq(sink_d.data[min((bytes_per_clk-header_leftover)*8, data_width-1):])
-            ),
-            source.data[header_leftover*8:].eq(sink.data),
-            If(source.valid & source.ready,
-                sink.ready.eq(~source.last),
-                NextValue(fsm_from_idle, 0),
-                If(source.last,
-                    NextState("IDLE")
+        if not aligned:
+            header_offset_multiplier = 1 if header_words == 1 else 2
+            self.sync += If(source.ready, sink_d.eq(sink))
+            fsm.act("UNALIGNED-DATA-COPY",
+                source.valid.eq(sink.valid | sink_d.last),
+                source.last.eq(sink_d.last),
+                source_last_be.eq(last_be_d),
+                If(fsm_from_idle,
+                    source.data[:max(header_leftover*8, 1)].eq(sr[min(header_offset_multiplier*data_width, len(sr)-1):])
+                ).Else(
+                    source.data[:max(header_leftover*8, 1)].eq(sink_d.data[min((bytes_per_clk-header_leftover)*8, data_width-1):])
+                ),
+                source.data[header_leftover*8:].eq(sink.data),
+                If(source.valid & source.ready,
+                    sink.ready.eq(~source.last),
+                    NextValue(fsm_from_idle, 0),
+                    If(source.last,
+                        NextState("IDLE")
+                    )
                 )
             )
-        )
 
-        # Error ------------------------------------------------------------------------------------
+        # Error.
         if hasattr(sink, "error") and hasattr(source, "error"):
             self.comb += source.error.eq(sink.error)
-
-        # Last BE ----------------------------------------------------------------------------------
-        if hasattr(sink, "last_be") and hasattr(source, "last_be"):
-            rotate_by = header.length%bytes_per_clk
-            x = [sink.last_be[(i + rotate_by)%bytes_per_clk] for i in range(bytes_per_clk)]
-            self.comb += source.last_be.eq(Cat(*x))
 
 # Depacketizer -------------------------------------------------------------------------------------
 
@@ -277,20 +280,21 @@ class Depacketizer(Module):
 
         # # #
 
-        # Parameters -------------------------------------------------------------------------------
+        # Parameters.
         data_width      = len(sink.data)
         bytes_per_clk   = data_width//8
         header_words    = (header.length*8)//data_width
         header_leftover = header.length%bytes_per_clk
+        aligned         = header_leftover == 0
 
-        # Signals ----------------------------------------------------------------------------------
+        # Signals.
         sr                = Signal(header.length*8, reset_less=True)
         sr_shift          = Signal()
         sr_shift_leftover = Signal()
         count             = Signal(max=max(header_words, 2))
         sink_d            = stream.Endpoint(sink_description)
 
-        # Header Shift/Decode ----------------------------------------------------------------------
+        # Header Shift/Decode.
         if (header_words) == 1 and (header_leftover == 0):
             self.sync += If(sr_shift, sr.eq(sink.data))
         else:
@@ -301,7 +305,7 @@ class Depacketizer(Module):
         self.comb += self.header.eq(sr)
         self.comb += header.decode(self.header, source)
 
-        # FSM --------------------------------------------------------------------------------------
+        # FSM.
         self.submodules.fsm = fsm = FSM(reset_state="IDLE")
         fsm_from_idle = Signal()
         fsm.act("IDLE",
@@ -311,11 +315,7 @@ class Depacketizer(Module):
                 sr_shift.eq(1),
                 NextValue(fsm_from_idle, 1),
                 If(header_words == 1,
-                    If(header_leftover,
-                        NextState("UNALIGNED-DATA-COPY")
-                    ).Else(
-                        NextState("ALIGNED-DATA-COPY")
-                    ),
+                    NextState("ALIGNED-DATA-COPY" if aligned else "UNALIGNED-DATA-COPY"),
                 ).Else(
                     NextState("HEADER-RECEIVE")
                 )
@@ -327,33 +327,8 @@ class Depacketizer(Module):
                 NextValue(count, count + 1),
                 sr_shift.eq(1),
                 If(count == (header_words - 1),
-                    If(header_leftover,
-                        NextValue(count, count + 1),
-                        NextState("UNALIGNED-DATA-COPY")
-                    ).Else(
-                        NextState("ALIGNED-DATA-COPY")
-                    )
-                )
-            )
-        )
-        self.sync += If(sink.valid & sink.ready, sink_d.eq(sink))
-        fsm.act("UNALIGNED-DATA-COPY",
-            source.valid.eq(sink.valid | sink_d.last),
-            source.last.eq(sink.last | sink_d.last),
-            sink.ready.eq(source.ready),
-            source.data.eq(sink_d.data[header_leftover*8:]),
-            source.data[min((bytes_per_clk-header_leftover)*8, data_width-1):].eq(sink.data),
-            If(fsm_from_idle,
-                source.valid.eq(sink_d.last),
-                sink.ready.eq(1),
-                If(sink.valid,
-                    NextValue(fsm_from_idle, 0),
-                    sr_shift_leftover.eq(1),
-                )
-            ),
-            If(source.valid & source.ready,
-                If(source.last,
-                    NextState("IDLE")
+                    NextState("ALIGNED-DATA-COPY" if aligned else "UNALIGNED-DATA-COPY"),
+                    NextValue(count, count + 1),
                 )
             )
         )
@@ -369,12 +344,75 @@ class Depacketizer(Module):
             )
         )
 
-        # Error ------------------------------------------------------------------------------------
+        if not aligned:
+            self.sync += If(sink.valid & sink.ready, sink_d.eq(sink))
+            fsm.act("UNALIGNED-DATA-COPY",
+                source.valid.eq(sink.valid | sink_d.last),
+                source.last.eq(sink.last | sink_d.last),
+                sink.ready.eq(source.ready),
+                source.data.eq(sink_d.data[header_leftover*8:]),
+                source.data[min((bytes_per_clk-header_leftover)*8, data_width-1):].eq(sink.data),
+                If(fsm_from_idle,
+                    source.valid.eq(sink_d.last),
+                    sink.ready.eq(1),
+                    If(sink.valid,
+                        NextValue(fsm_from_idle, 0),
+                        sr_shift_leftover.eq(1),
+                    )
+                ),
+                If(source.valid & source.ready,
+                    If(source.last,
+                        NextState("IDLE")
+                    )
+                )
+            )
+
+        # Error.
         if hasattr(sink, "error") and hasattr(source, "error"):
             self.comb += source.error.eq(sink.error)
 
-        # Last BE ----------------------------------------------------------------------------------
+        # Last BE.
         if hasattr(sink, "last_be") and hasattr(source, "last_be"):
             x = [sink.last_be[(i - (bytes_per_clk - header_leftover))%bytes_per_clk]
                 for i in range(bytes_per_clk)]
             self.comb += source.last_be.eq(Cat(*x))
+
+# PacketFIFO ---------------------------------------------------------------------------------------
+
+class PacketFIFO(Module):
+    def __init__(self, layout, payload_depth, param_depth=None, buffered=False):
+        self.sink   = sink   = stream.Endpoint(layout)
+        self.source = source = stream.Endpoint(layout)
+
+        # # #
+
+        # Parameters.
+        param_layout   = sink.description.param_layout
+        payload_layout = sink.description.payload_layout
+        if param_layout == []:
+            param_layout = [("dummy", 1)]
+        if param_depth is None:
+            param_depth = payload_depth
+
+        # Create the FIFOs.
+        payload_description = stream.EndpointDescription(payload_layout=payload_layout)
+        param_description   = stream.EndpointDescription(param_layout=param_layout)
+        self.submodules.payload_fifo = payload_fifo = stream.SyncFIFO(payload_description, payload_depth, buffered)
+        self.submodules.param_fifo   = param_fifo   = stream.SyncFIFO(param_description,   param_depth,   buffered)
+
+        # Connect Sink to FIFOs.
+        self.comb += [
+            sink.connect(param_fifo.sink,   keep=set([e[0] for e in param_layout])),
+            sink.connect(payload_fifo.sink, keep=set([e[0] for e in payload_layout] + ["last"])),
+            param_fifo.sink.valid.eq(sink.valid & sink.last),
+            payload_fifo.sink.valid.eq(sink.valid & payload_fifo.sink.ready),
+            sink.ready.eq(param_fifo.sink.ready & payload_fifo.sink.ready),
+        ]
+
+        # Connect FIFOs to Source.
+        self.comb += [
+            param_fifo.source.connect(source,   omit={"last",  "ready"}),
+            payload_fifo.source.connect(source, omit={"valid", "ready"}),
+            param_fifo.source.ready.eq(  source.valid & source.last & source.ready),
+            payload_fifo.source.ready.eq(source.valid &               source.ready),
+        ]

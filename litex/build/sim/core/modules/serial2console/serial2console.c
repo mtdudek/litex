@@ -76,11 +76,6 @@ void read_handler(int fd, short event, void *arg)
   int i;
   read_len = read(fd, buffer, 1024);
   for(i = 0; i < read_len; i++) {
-    /* If we are reading a newline make sure its \r\n.  */
-    if (buffer[i] == '\n') {
-      s->databuf[(s->data_start + s->datalen ) % 2048] = '\r';
-      s->datalen++;
-    }
     s->databuf[(s->data_start + s->datalen ) % 2048] = buffer[i];
     s->datalen++;
   }
@@ -145,10 +140,11 @@ out:
   return ret;
 }
 
-static int serial2console_tick(void *sess) {
+static int serial2console_tick(void *sess, uint64_t time_ps) {
+  static struct clk_edge_t edge;
   struct session_s *s = (struct session_s*)sess;
 
-  if(*s->sys_clk == 0) {
+  if(!clk_pos_edge(&edge, *s->sys_clk)) {
     return RC_OK;
   }
 

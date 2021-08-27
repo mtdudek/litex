@@ -1,7 +1,10 @@
-# This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2015-2018 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2016-2019 Tim 'mithro' Ansell <me@mith.ro>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2015-2018 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2016-2019 Tim 'mithro' Ansell <me@mith.ro>
+# SPDX-License-Identifier: BSD-2-Clause
 
 """
 CSR-2 bus
@@ -100,7 +103,7 @@ class SRAM(Module):
         page_bits = log2_int((mem.depth*csrw_per_memw + aligned_paging - 1)//aligned_paging, False)
         if page_bits:
             self._page = CSRStorage(page_bits, name=mem.name_override + "_page")
-            printf("WARNING: SRAM CSR memory will requires paged access.")
+            print("WARNING: SRAM CSR memory will require paged access.")
         else:
             self._page = None
         if read_only is None:
@@ -163,7 +166,7 @@ class SRAM(Module):
 # CSR Bank -----------------------------------------------------------------------------------------
 
 class CSRBank(csr.GenericBank):
-    def __init__(self, description, address=0, bus=None, paging=0x800, soc_bus_data_width=32):
+    def __init__(self, description, address=0, bus=None, paging=0x800, ordering="big", soc_bus_data_width=32):
         if bus is None:
             bus = Interface()
         self.bus = bus
@@ -171,7 +174,11 @@ class CSRBank(csr.GenericBank):
 
         # # #
 
-        csr.GenericBank.__init__(self, description, len(self.bus.dat_w))
+        csr.GenericBank.__init__(self,
+            description = description,
+            busword     = len(self.bus.dat_w),
+            ordering    = ordering,
+        )
 
         sel = Signal()
         self.comb += sel.eq(self.bus.adr[log2_int(aligned_paging):] == address)
@@ -179,18 +186,16 @@ class CSRBank(csr.GenericBank):
         for i, c in enumerate(self.simple_csrs):
             self.comb += [
                 c.r.eq(self.bus.dat_w[:c.size]),
-                c.re.eq(sel & \
-                    self.bus.we & \
-                    (self.bus.adr[:self.decode_bits] == i)),
-                c.we.eq(sel & \
-                    ~self.bus.we & \
-                    (self.bus.adr[:self.decode_bits] == i)),
+                If(sel & (self.bus.adr[:log2_int(aligned_paging)] == i),
+                    c.re.eq( self.bus.we),
+                    c.we.eq(~self.bus.we)
+                )
             ]
 
         brcases = dict((i, self.bus.dat_r.eq(c.w)) for i, c in enumerate(self.simple_csrs))
         self.sync += [
             self.bus.dat_r.eq(0),
-            If(sel, Case(self.bus.adr[:self.decode_bits], brcases))
+            If(sel, Case(self.bus.adr[:log2_int(aligned_paging)], brcases))
         ]
 
 
@@ -201,10 +206,11 @@ class CSRBank(csr.GenericBank):
 # address_map is called exactly once for each object at each call to
 # scan(), so it can have side effects.
 class CSRBankArray(Module):
-    def __init__(self, source, address_map, *ifargs, paging=0x800, soc_bus_data_width=32, **ifkwargs):
+    def __init__(self, source, address_map, *ifargs, paging=0x800, ordering="big", soc_bus_data_width=32, **ifkwargs):
         self.source             = source
         self.address_map        = address_map
         self.paging             = paging
+        self.ordering           = ordering
         self.soc_bus_data_width = soc_bus_data_width
         self.scan(ifargs, ifkwargs)
 
@@ -246,6 +252,7 @@ class CSRBankArray(Module):
                 rmap = CSRBank(csrs, mapaddr,
                     bus                = bank_bus,
                     paging             = self.paging,
+                    ordering           = self.ordering,
                     soc_bus_data_width = self.soc_bus_data_width)
                 self.submodules += rmap
                 self.banks.append((name, csrs, mapaddr, rmap))

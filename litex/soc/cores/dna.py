@@ -1,10 +1,15 @@
-# This file is Copyright (c) 2014-2015 Robert Jordens <jordens@gmail.com>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2014-2015 Robert Jordens <jordens@gmail.com>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from migen import *
 
 from litex.soc.interconnect.csr import *
 
+
+# Xilinx DNA (Device Identifier) -------------------------------------------------------------------
 
 class DNA(Module, AutoCSR):
     def __init__(self):

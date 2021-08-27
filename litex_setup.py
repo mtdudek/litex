@@ -23,8 +23,9 @@ repos = [
     ("nmigen",       ("https://github.com/nmigen/",        True,  True, None)),
 
     # LiteX SoC builder
-    ("pythondata-software-compiler_rt", ("https://github.com/litex-hub/",     False, True, None)),
-    ("litex",                           ("https://github.com/enjoy-digital/", False, True, None)),
+    ("pythondata-software-picolibc",    ("https://github.com/antmicro/",  True,  True, None)),
+    ("pythondata-software-compiler_rt", ("https://github.com/litex-hub/", False, True, None)),
+    ("litex",                           ("https://github.com/antmicro/",  False, True, 0xba7b7b97)),
 
     # LiteX cores ecosystem
     ("liteeth",      ("https://github.com/enjoy-digital/", False, True, None)),
@@ -44,6 +45,8 @@ repos = [
 
     # Optional LiteX data
     ("pythondata-misc-tapcfg",     ("https://github.com/litex-hub/", False, True, None)),
+    ("pythondata-misc-opentitan",  ("https://github.com/litex-hub/", False, True, 0xe43566c)),
+    ("pythondata-misc-usb_ohci",   ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-lm32",        ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-mor1kx",      ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-picorv32",    ("https://github.com/litex-hub/", False, True, None)),
@@ -52,7 +55,7 @@ repos = [
     ("pythondata-cpu-vexriscv-smp",("https://github.com/litex-hub/", True,  True, None)),
     ("pythondata-cpu-rocket",      ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-minerva",     ("https://github.com/litex-hub/", False, True, None)),
-    ("pythondata-cpu-microwatt",   ("https://github.com/litex-hub/", False, True, 0xba76652)),
+    ("pythondata-cpu-microwatt",   ("https://github.com/litex-hub/", False, True, 0xf9807b6)),
     ("pythondata-cpu-blackparrot", ("https://github.com/litex-hub/", False, True, None)),
     ("pythondata-cpu-cv32e40p",    ("https://github.com/litex-hub/", True,  True, None)),
 ]
@@ -90,11 +93,6 @@ def sifive_riscv_download():
 
 # Setup --------------------------------------------------------------------------------------------
 
-if os.environ.get("TRAVIS", "") == "true":
-    # Ignore `ssl.SSLCertVerificationError` on CI.
-    import ssl
-    ssl._create_default_https_context = ssl._create_unverified_context
-
 if len(sys.argv) < 2:
     print("Available commands:")
     print("- init")
@@ -106,7 +104,7 @@ if len(sys.argv) < 2:
 
 # Check/Update litex_setup.py
 
-litex_setup_url = "https://raw.githubusercontent.com/enjoy-digital/litex/master/litex_setup.py"
+litex_setup_url = "https://raw.githubusercontent.com/antmicro/litex/libbase-replacement/litex_setup.py"
 current_sha1 = hashlib.sha1(open(os.path.realpath(__file__)).read().encode("utf-8")).hexdigest()
 print("[checking litex_setup.py]...")
 try:
@@ -151,6 +149,8 @@ if "update" in sys.argv[1:]:
         os.chdir(os.path.join(current_path, name))
         subprocess.check_call("git checkout master", shell=True)
         subprocess.check_call("git pull --ff-only", shell=True)
+        if need_recursive:
+            subprocess.check_call("git submodule update --init --recursive", shell=True)
         if sha1 is not None:
             os.chdir(os.path.join(current_path, name))
             os.system("git checkout {:7x}".format(sha1))

@@ -1,10 +1,14 @@
-# This file is Copyright (c) 2014-2020 Florent Kermarrec <florent@enjoy-digital.fr>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2014-2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 import subprocess
 import sys
 import math
+from shutil import which
 
 from migen.fhdl.structure import _Fragment
 
@@ -86,8 +90,15 @@ def _run_script(script):
     else:
         shell = ["bash"]
 
+    if which("vivado") is None and os.getenv("LITEX_ENV_VIVADO", False) == False:
+        msg = "Unable to find or source Vivado toolchain, please either:\n"
+        msg += "- Source Vivado's settings manually.\n"
+        msg += "- Or set LITEX_ENV_VIVADO environment variant to Vivado's settings path.\n"
+        msg += "- Or add Vivado toolchain to your $PATH."
+        raise OSError(msg)
+
     if tools.subprocess_call_filtered(shell + [script], common.colors) != 0:
-        raise OSError("Subprocess failed")
+        raise OSError("Error occured during Vivado's script execution.")
 
 # XilinxVivadoToolchain ----------------------------------------------------------------------------
 
@@ -160,15 +171,18 @@ class XilinxVivadoToolchain:
         # Add IPs
         tcl.append("\n# Add IPs\n")
         for filename, disable_constraints in platform.ips.items():
-            filename_tcl = "{" + filename + "}"
-            ip = os.path.splitext(os.path.basename(filename))[0]
-            tcl.append("read_ip " + filename_tcl)
-            tcl.append("upgrade_ip [get_ips {}]".format(ip))
-            tcl.append("generate_target all [get_ips {}]".format(ip))
-            tcl.append("synth_ip [get_ips {}] -force".format(ip))
-            tcl.append("get_files -all -of_objects [get_files {}]".format(filename_tcl))
-            if disable_constraints:
-                tcl.append("set_property is_enabled false [get_files -of_objects [get_files {}] -filter {{FILE_TYPE == XDC}}]".format(filename_tcl))
+            if filename.endswith("tcl"):
+                tcl += open(filename, "r").read().splitlines()
+            else:
+                filename_tcl = "{" + filename + "}"
+                ip = os.path.splitext(os.path.basename(filename))[0]
+                tcl.append("read_ip " + filename_tcl)
+                tcl.append("upgrade_ip [get_ips {}]".format(ip))
+                tcl.append("generate_target all [get_ips {}]".format(ip))
+                tcl.append("synth_ip [get_ips {}] -force".format(ip))
+                tcl.append("get_files -all -of_objects [get_files {}]".format(filename_tcl))
+                if disable_constraints:
+                    tcl.append("set_property is_enabled false [get_files -of_objects [get_files {}] -filter {{FILE_TYPE== XDC}}]".format(filename_tcl))
 
         # Add constraints
         tcl.append("\n# Add constraints\n")

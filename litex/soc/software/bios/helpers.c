@@ -3,13 +3,15 @@
 // SPDX-License-Identifier: BSD-Source-Code
 
 #include <stdio.h>
-#include <console.h>
-#include <crc.h>
 #include <string.h>
+
+#include <libutils/console.h>
+#include <libutils/crc.h>
 
 #include "readline.h"
 #include "helpers.h"
 #include "command.h"
+#include "init.h"
 
 extern unsigned int _ftext, _edata_rom;
 
@@ -19,13 +21,13 @@ void dump_bytes(unsigned int *ptr, int count, unsigned long addr)
 	char *data = (char *)ptr;
 	int line_bytes = 0, i = 0;
 
-	putsnonl("Memory dump:");
+	fputs("Memory dump:", stdout);
 	while (count > 0) {
 		line_bytes =
 			(count > NUMBER_OF_BYTES_ON_A_LINE)?
 				NUMBER_OF_BYTES_ON_A_LINE : count;
 
-		printf("\n0x%08x  ", addr);
+		printf("\n0x%08lx  ", addr);
 		for (i = 0; i < line_bytes; i++)
 			printf("%02x ", *(unsigned char *)(data+i));
 
@@ -125,4 +127,11 @@ struct command_struct *command_dispatcher(char *command, int nb_params, char **p
 	}
 
 	return NULL;
+}
+
+void init_dispatcher(void)
+{
+	for (const init_func* fp = __bios_init_start; fp != __bios_init_end; fp++) {
+		(*fp)();
+	}
 }

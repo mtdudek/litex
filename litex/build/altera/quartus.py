@@ -1,12 +1,16 @@
-# This file is Copyright (c) 2014-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2019 msloniewski <marcin.sloniewski@gmail.com>
-# This file is Copyright (c) 2019 vytautasb <v.buitvydas@limemicro.com>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2014-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2019 msloniewski <marcin.sloniewski@gmail.com>
+# Copyright (c) 2019 vytautasb <v.buitvydas@limemicro.com>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 import subprocess
 import sys
 import math
+from shutil import which
 
 from migen.fhdl.structure import _Fragment
 
@@ -95,7 +99,16 @@ def _build_qsf(device, ips, sources, vincpaths, named_sc, named_pc, build_name, 
     for filename, language, library in sources:
         if language == "verilog": language = "systemverilog" # Enforce use of SystemVerilog
         tpl = "set_global_assignment -name {lang}_FILE {path} -library {lib}"
-        qsf.append(tpl.format(lang=language.upper(), path=filename.replace("\\", "/"), lib=library))
+        # Do not add None type files
+        if language is not None:
+            qsf.append(tpl.format(lang=language.upper(), path=filename.replace("\\", "/"), lib=library))
+        # Check if the file is a header. Those should not be explicitly added to qsf,
+        # but rather included in include search_path
+        else:
+            if filename.endswith(".svh") or filename.endswith(".vh"):
+                fpath = os.path.dirname(filename)
+                if fpath not in vincpaths:
+                    vincpaths.append(fpath)
 
     # Add ips
     for filename in ips:
@@ -153,12 +166,19 @@ def _run_script(script):
     else:
         shell = ["bash"]
 
+    if which("quartus_map") is None:
+        msg = "Unable to find Quartus toolchain, please:\n"
+        msg += "- Add Quartus toolchain to your $PATH."
+        raise OSError(msg)
+
     if subprocess.call(shell + [script]) != 0:
-        raise OSError("Subprocess failed")
+        raise OSError("Error occured during Quartus's script execution.")
 
 # AlteraQuartusToolchain ---------------------------------------------------------------------------
 
 class AlteraQuartusToolchain:
+    attr_translate = {}
+
     def __init__(self):
         self.clocks      = dict()
         self.false_paths = set()

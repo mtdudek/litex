@@ -1,5 +1,8 @@
-# This file is Copyright (c) 2018-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2018-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from litex.build.generic_platform import GenericPlatform
 from litex.build.microsemi import common, libero_soc
@@ -20,9 +23,10 @@ class MicrosemiPlatform(GenericPlatform):
         so = dict()
         so.update(self.toolchain.special_overrides)
         so.update(special_overrides)
-        return GenericPlatform.get_verilog(self, *args, special_overrides=so,
-                                           attr_translate=self.toolchain.attr_translate,
-                                           **kwargs)
+        return GenericPlatform.get_verilog(self, *args,
+            special_overrides = so,
+            attr_translate    = self.toolchain.attr_translate,
+            **kwargs)
 
     def build(self, *args, **kwargs):
         return self.toolchain.build(self, *args, **kwargs)

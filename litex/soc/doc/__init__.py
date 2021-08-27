@@ -1,5 +1,8 @@
-# This file is Copyright (c) 2020 Sean Cross <sean@xobs.io>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2020 Sean Cross <sean@xobs.io>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 import pathlib
@@ -25,6 +28,7 @@ offline_skin_js_path = "https://wavedrom.com/skins/default.js"
 offline_wavedrom_js_path = "https://wavedrom.com/WaveDrom.js"
 html_theme = 'alabaster'
 html_static_path = ['_static']
+master_doc = 'index'
 """
 
 def generate_svd(soc, buildpath, filename=None, name="soc", **kwargs):
@@ -36,12 +40,13 @@ def generate_svd(soc, buildpath, filename=None, name="soc", **kwargs):
 
 
 def generate_docs(soc, base_dir,
-    project_name      = "LiteX SoC Project",
-    author            = "Anonymous",
-    sphinx_extensions = [],
-    quiet             = False,
-    note_pulses       = False,
-    from_scratch      = True):
+    project_name          = "LiteX SoC Project",
+    author                = "Anonymous",
+    sphinx_extensions     = [],
+    quiet                 = False,
+    note_pulses           = False,
+    from_scratch          = True,
+    sphinx_extra_config   = ""):
     """Possible extra extensions:
         [
             'm2r',
@@ -68,6 +73,7 @@ def generate_docs(soc, base_dir,
                 sphinx_ext_str += "\n    \"{}\",".format(ext)
             print(default_sphinx_configuration.format(project_name, year,
                                                       author, author, sphinx_ext_str), file=conf)
+            print(sphinx_extra_config, file=conf)
 
     if not quiet:
         print("Generate the documentation by running `sphinx-build -M html {} {}_build`".format(base_dir, base_dir))

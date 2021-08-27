@@ -1,11 +1,12 @@
-# This file is Copyright (c) 2016-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2018 Sergiusz Bazanski <q3k@q3k.org>
-# This file is Copyright (c) 2019 Antmicro <www.antmicro.com>
-# This file is Copyright (c) 2019 Tim 'mithro' Ansell <me@mith.ro>
-# This file is Copyright (c) 2018 William D. Jones <thor0505@comcast.net>
-# License: BSD
-
-#!/usr/bin/env python3
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2016-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2018 Sergiusz Bazanski <q3k@q3k.org>
+# Copyright (c) 2019 Antmicro <www.antmicro.com>
+# Copyright (c) 2019 Tim 'mithro' Ansell <me@mith.ro>
+# Copyright (c) 2018 William D. Jones <thor0505@comcast.net>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import os
 
@@ -13,10 +14,13 @@ from migen import *
 
 from litex import get_data_mod
 from litex.soc.interconnect import wishbone
-from litex.soc.cores.cpu import CPU, CPU_GCC_TRIPLE_RISCV64
+from litex.soc.cores.cpu import CPU, CPU_GCC_TRIPLE_RISCV32
 
+# Variants -----------------------------------------------------------------------------------------
 
 CPU_VARIANTS = ["minimal", "standard"]
+
+# GCC Flags ----------------------------------------------------------------------------------------
 
 GCC_FLAGS = {
     #                               /-------- Base ISA
@@ -30,6 +34,7 @@ GCC_FLAGS = {
     "standard":         "-march=rv32im     -mabi=ilp32 ",
 }
 
+# PicoRV32 -----------------------------------------------------------------------------------------
 
 class PicoRV32(CPU):
     name                 = "picorv32"
@@ -37,11 +42,12 @@ class PicoRV32(CPU):
     variants             = CPU_VARIANTS
     data_width           = 32
     endianness           = "little"
-    gcc_triple           = CPU_GCC_TRIPLE_RISCV64
+    gcc_triple           = CPU_GCC_TRIPLE_RISCV32
     linker_output_format = "elf32-littleriscv"
     nop                  = "nop"
     io_regions           = {0x80000000: 0x80000000} # origin, length
 
+    # GCC Flags.
     @property
     def gcc_flags(self):
         flags =  "-mno-save-restore "
@@ -49,6 +55,7 @@ class PicoRV32(CPU):
         flags += "-D__picorv32__ "
         return flags
 
+    # Reserved Interrupts.
     @property
     def reserved_interrupts(self):
         return {
@@ -64,8 +71,8 @@ class PicoRV32(CPU):
         self.reset        = Signal()
         self.interrupt    = Signal(32)
         self.idbus        = idbus = wishbone.Interface()
-        self.periph_buses = [idbus]
-        self.memory_buses = []
+        self.periph_buses = [idbus] # Peripheral buses (Connected to main SoC's bus).
+        self.memory_buses = []      # Memory buses (Connected directly to LiteDRAM).
 
         # # #
 
@@ -77,15 +84,12 @@ class PicoRV32(CPU):
         mem_wstrb = Signal(4)
         mem_rdata = Signal(32)
 
-        # PicoRV32 parameters. To create a new variant, modify this dictionary
-        # and change the desired parameters.
+        # PicoRV32 parameters, change the desired parameters to create a create a new variant.
         self.cpu_params = dict(
             p_ENABLE_COUNTERS      = 1,
             p_ENABLE_COUNTERS64    = 1,
-            # Changing REGS has no effect as on FPGAs, the registers are
-            # implemented using a register file stored in DPRAM.
-            p_ENABLE_REGS_16_31    = 1,
-            p_ENABLE_REGS_DUALPORT = 1,
+            p_ENABLE_REGS_16_31    = 1, # Changing REGS has no effect as on FPGAs, the regs are
+            p_ENABLE_REGS_DUALPORT = 1, # implemented using a register file stored in DPRAM.
             p_LATCHED_MEM_RDATA    = 0,
             p_TWO_STAGE_SHIFT      = 1,
             p_TWO_CYCLE_COMPARE    = 0,
@@ -105,6 +109,7 @@ class PicoRV32(CPU):
             p_STACKADDR            = 0xffffffff,
         )
 
+        # Enforce default parameters for Minimal variant.
         if variant == "minimal":
             self.cpu_params.update(
                 p_ENABLE_COUNTERS   = 0,
@@ -117,14 +122,14 @@ class PicoRV32(CPU):
             )
 
         self.cpu_params.update(
-            # clock / reset
-            i_clk    =ClockSignal(),
-            i_resetn =~(ResetSignal() | self.reset),
+            # Clk / Rst.
+            i_clk    = ClockSignal("sys"),
+            i_resetn = ~(ResetSignal("sys") | self.reset),
 
-            # trap
-            o_trap=self.trap,
+            # Trap.
+            o_trap = self.trap,
 
-            # memory interface
+            # Memory Interface.
             o_mem_valid = mem_valid,
             o_mem_instr = mem_instr,
             i_mem_ready = mem_ready,
@@ -134,14 +139,14 @@ class PicoRV32(CPU):
             o_mem_wstrb = mem_wstrb,
             i_mem_rdata = mem_rdata,
 
-            # look ahead interface (not used)
+            # Look Ahead Interface (not used).
             o_mem_la_read  = Signal(),
             o_mem_la_write = Signal(),
             o_mem_la_addr  = Signal(32),
             o_mem_la_wdata = Signal(32),
             o_mem_la_wstrb = Signal(4),
 
-            # co-processor interface (not used)
+            # Co-Processor interface (not used).
             o_pcpi_valid = Signal(),
             o_pcpi_insn  = Signal(32),
             o_pcpi_rs1   = Signal(32),
@@ -151,11 +156,11 @@ class PicoRV32(CPU):
             i_pcpi_wait  = 0,
             i_pcpi_ready = 0,
 
-            # irq interface
+            # IRQ interface.
             i_irq = self.interrupt,
             o_eoi = Signal(32)) # not used
 
-        # adapt memory interface to wishbone
+        # Adapt Memory Interface to Wishbone.
         self.comb += [
             idbus.adr.eq(mem_addr[2:]),
             idbus.dat_w.eq(mem_wdata),
@@ -169,7 +174,7 @@ class PicoRV32(CPU):
             mem_rdata.eq(idbus.dat_r),
         ]
 
-        # add verilog sources
+        # Add Verilog sources
         self.add_sources(platform)
 
     def set_reset_address(self, reset_address):

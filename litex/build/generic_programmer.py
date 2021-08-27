@@ -1,10 +1,14 @@
-# This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2020 Florent Kermarrec <florent@enjoy-digital.fr>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# SPDX-License-Identifier: BSD-2-Clause
 
 
 import os
 import sys
+import subprocess
 
 from litex.build import tools
 
@@ -87,4 +91,10 @@ class GenericProgrammer:
     def flash(self, address, data_file):
         raise NotImplementedError
 
-
+    def call(self, command, check=True):
+        if (subprocess.call(command) != 0) and check:
+            msg = f"Error occured during {self.__class__.__name__}'s call, please check:\n"
+            msg += f"- {self.__class__.__name__} installation.\n"
+            msg += f"- access permissions.\n"
+            msg += f"- hardware and cable."
+            raise OSError(msg)

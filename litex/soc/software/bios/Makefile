@@ -18,6 +18,8 @@ OBJECTS = isr.o			\
 	  cmd_litedram.o	\
 	  cmd_liteeth.o		\
 	  cmd_litesdcard.o  \
+	  cmd_litesata.o    \
+	  sim_debug.o		\
 	  main.o
 
 ifneq "$(or $(TERM_NO_COMPLETE),$(TERM_MINI))" ""
@@ -53,24 +55,17 @@ endif
 
 bios.elf: $(BIOS_DIRECTORY)/linker.ld $(OBJECTS)
 
+vpath %.a $(PACKAGES:%=../%)
 
-%.elf: ../libbase/crt0.o \
-	../libcompiler_rt/libcompiler_rt.a \
-	../libbase/libbase-nofloat.a \
-	../liblitedram/liblitedram.a \
-	../libliteeth/libliteeth.a \
-	../liblitespi/liblitespi.a \
-	../liblitesdcard/liblitesdcard.a
-	$(LD) $(LDFLAGS) -T $(BIOS_DIRECTORY)/linker.ld -N -o $@ \
-		../libbase/crt0.o \
+%.elf: crt0.o $(LIBS:%=%.a)
+	$(CC) $(LDFLAGS) -T $(BIOS_DIRECTORY)/linker.ld -N -o $@ \
+		crt0.o \
 		$(OBJECTS) \
-		-L../libcompiler_rt \
-		-L../libbase \
-		-L../liblitedram \
-		-L../libliteeth \
-		-L../liblitespi \
-		-L../liblitesdcard \
-		-llitedram -lliteeth -llitespi -llitesdcard -lbase-nofloat -lcompiler_rt
+		$(PACKAGES:%=-L../%) \
+		-Wl,--whole-archive \
+		-Wl,--gc-sections \
+		$(LIBS:lib%=-l%) \
+
 
 ifneq ($(OS),Windows_NT)
 	chmod -x $@
@@ -89,6 +84,9 @@ endif
 	$(assemble)
 
 boot-helper.o: $(CPU_DIRECTORY)/boot-helper.S
+	$(assemble)
+
+crt0.o: $(CPU_DIRECTORY)/crt0.S
 	$(assemble)
 
 clean:

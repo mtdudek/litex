@@ -1,6 +1,9 @@
-# This file is Copyright (c) 2020 bunnie <bunnie@kosagi.com>
-# This file is Copyright (c) 2020 Antmicro <www.antmicro.com>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2020 bunnie <bunnie@kosagi.com>
+# Copyright (c) 2020 Antmicro <www.antmicro.com>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from migen.genlib.cdc import MultiReg
 
@@ -16,37 +19,37 @@ class I2S_FORMAT(Enum):
     I2S_LEFT_JUSTIFIED = 2
 
 class S7I2S(Module, AutoCSR, AutoDoc):
-    def __init__(self, pads, fifo_depth=256, controller=False, master=False, concatenate_channels=True, sample_width=16, frame_format=I2S_FORMAT.I2S_LEFT_JUSTIFIED, lrck_ref_freq=100e6, lrck_freq=44100, bits_per_channel=28):
+    def __init__(self, pads, fifo_depth=256, controller=False, master=False, concatenate_channels=True, sample_width=16, frame_format=I2S_FORMAT.I2S_LEFT_JUSTIFIED, lrck_ref_freq=100e6, lrck_freq=44100, bits_per_channel=28, document_interrupts=False):
         if master == True:
             print("Master/slave terminology deprecated, please use controller/peripheral. Please see http://oshwa.org/a-resolution-to-redefine-spi-signal-names.")
             controller = True
 
         self.intro = ModuleDoc("""Intro
 
-        I2S controller/peripheral creates a controller/peripheral audio interface instance depending on a configured controller variable. 
+        I2S controller/peripheral creates a controller/peripheral audio interface instance depending on a configured controller variable.
         Tx and Rx interfaces are inferred based upon the presence or absence of the respective pins in the "pads" argument.
-        
+
         When device is configured as controller you can manipulate LRCK and SCLK signals using below variables.
-        
+
         - lrck_ref_freq - is a reference signal that is required to achive desired LRCK and SCLK frequencies.
                          Have be the same as your sys_clk.
-        - lrck_freq - this variable defines requested LRCK frequency. Mind you, that based on sys_clk frequency, 
+        - lrck_freq - this variable defines requested LRCK frequency. Mind you, that based on sys_clk frequency,
                          configured value will be more or less acurate.
-        - bits_per_channel - defines SCLK frequency. Mind you, that based on sys_clk frequency, 
+        - bits_per_channel - defines SCLK frequency. Mind you, that based on sys_clk frequency,
                          the requested amount of bits per channel may vary from configured.
-        
+
         When device is configured as peripheral I2S interface, sampling rate and framing is set by the
         programming of the audio CODEC chip. A peripheral configuration defers the
         generation of audio clocks to the CODEC, which has PLLs specialized to generate the correct
         frequencies for audio sampling rates.
 
         I2S core supports two formats: standard and left-justified.
-        
-        - Standard format requires a device to receive and send data with one bit offset for both channels. 
+
+        - Standard format requires a device to receive and send data with one bit offset for both channels.
             Left channel begins with low signal on LRCK.
         - Left justified format requires from device to receive and send data without any bit offset for both channels.
             Left channel begins with high signal on LRCK.
-    
+
         Sample width can be any of 1 to 32 bits.
 
         When sample_width is less than or equal to 16-bit and concatenate_channels is enabled,
@@ -108,7 +111,7 @@ class S7I2S(Module, AutoCSR, AutoDoc):
 
         - Data is updated on the falling edge
         - Data is sampled on the rising edge
-        - Words are MSB-to-LSB,  
+        - Words are MSB-to-LSB,
         - Sync is an input or output based on configure mode,
         - Sync can be longer than the wordlen, extra bits are just ignored
         - Tx is data to the codec (SDI pin on LM49352)
@@ -134,7 +137,7 @@ class S7I2S(Module, AutoCSR, AutoDoc):
         if hasattr(pads, 'rx'):
             rx_pin = Signal()
             self.specials += MultiReg(pads.rx, rx_pin)
-        
+
         fifo_data_width = sample_width
         if concatenate_channels:
             if sample_width <= 16:
@@ -283,10 +286,12 @@ class S7I2S(Module, AutoCSR, AutoDoc):
                 o_WRERR       = rx_wrerr,
             )
             self.comb += [  # Wire up the status signals and interrupts
+                self.rx_stat.fields.overflow.eq(rx_wrerr),
                 self.rx_stat.fields.underflow.eq(rx_rderr),
                 self.rx_stat.fields.dataready.eq(rx_almostfull),
                 self.rx_stat.fields.wrcount.eq(rx_wrcount),
                 self.rx_stat.fields.rdcount.eq(rx_rdcount),
+                self.rx_stat.fields.empty.eq(rx_empty),
                 self.ev.rx_ready.trigger.eq(rx_almostfull),
                 self.ev.rx_error.trigger.eq(rx_wrerr | rx_rderr),
             ]
@@ -316,7 +321,7 @@ class S7I2S(Module, AutoCSR, AutoDoc):
             rx_cnt_width = math.ceil(math.log(fifo_data_width,2))
             rx_cnt = Signal(rx_cnt_width)
             rx_delay_cnt = Signal()
-            rx_delay_val = 1 if frame_format == I2S_FORMAT.I2S_STANDARD else 0 
+            rx_delay_val = 1 if frame_format == I2S_FORMAT.I2S_STANDARD else 0
 
             self.submodules.rxi2s = rxi2s = FSM(reset_state="IDLE")
             rxi2s.act("IDLE",
@@ -527,7 +532,7 @@ class S7I2S(Module, AutoCSR, AutoDoc):
             ]
             self.sync += [
                 # This is the bus responder -- need to check how this interacts with uncached memory
-                # region 
+                # region
                 If(bus.cyc & bus.stb & bus.we & ~bus.ack,
                    If(~tx_full,
                       tx_wr_d.eq(bus.dat_w),
@@ -554,17 +559,23 @@ class S7I2S(Module, AutoCSR, AutoDoc):
             self.submodules.txi2s = txi2s = FSM(reset_state="IDLE")
             txi2s.act("IDLE",
                 If(self.tx_ctl.fields.enable,
-                    If(falling_edge & (~sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else sync_pin),
+                    If(rising_edge & (~sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else sync_pin),
                         NextState("WAIT_SYNC"),
                     )
                 )
             ),
             txi2s.act("WAIT_SYNC",
-                If(falling_edge & (~sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else sync_pin),
-                    NextState("LEFT"),
+                If(rising_edge & (~sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else sync_pin),
+                    NextState("LEFT_FALL"),
                     NextValue(tx_cnt, sample_width),
                     NextValue(tx_buf, Cat(tx_rd_d, offset)),
                     tx_rden.eq(1),
+                )
+            )
+            # sync should be sampled on rising edge, but data should change on falling edge
+            txi2s.act("LEFT_FALL",
+                If(falling_edge,
+                    NextState("LEFT")
                 )
             )
             txi2s.act("LEFT",
@@ -582,7 +593,7 @@ class S7I2S(Module, AutoCSR, AutoDoc):
                     If(~self.tx_ctl.fields.enable,
                         NextState("IDLE")
                     ).Else(
-                        If(falling_edge,
+                        If(rising_edge,
                             If((tx_cnt == 0),
                                 If((sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else ~sync_pin),
                                     NextValue(tx_cnt, sample_width),
@@ -591,7 +602,7 @@ class S7I2S(Module, AutoCSR, AutoDoc):
                                     NextState("LEFT_WAIT"),
                                 )
                             ).Elif(tx_cnt > 0,
-                                NextState("LEFT"),
+                                NextState("LEFT_FALL"),
                             )
                         )
                     )
@@ -601,23 +612,28 @@ class S7I2S(Module, AutoCSR, AutoDoc):
                     If(~self.tx_ctl.fields.enable,
                         NextState("IDLE")
                     ).Else(
-                        If(falling_edge,
+                        If(rising_edge,
                             If((tx_cnt == 0),
                                 If((sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else ~sync_pin),
                                     NextValue(tx_cnt, sample_width),
-                                    NextState("RIGHT"),
+                                    NextState("RIGHT_FALL"),
                                     NextValue(tx_buf, Cat(tx_rd_d,offset)),
                                     tx_rden.eq(1),
                                 ).Else(
                                     NextState("LEFT_WAIT"),
                                 )
                             ).Elif(tx_cnt > 0,
-                                NextState("LEFT"),
+                                NextState("LEFT_FALL"),
                             )
                         )
                     )
                 )
-
+            # sync should be sampled on rising edge, but data should change on falling edge
+            txi2s.act("RIGHT_FALL",
+                If(falling_edge,
+                    NextState("RIGHT")
+                )
+            )
             txi2s.act("RIGHT",
                 If(~self.tx_ctl.fields.enable,
                     NextState("IDLE")
@@ -632,14 +648,14 @@ class S7I2S(Module, AutoCSR, AutoDoc):
                 If(~self.tx_ctl.fields.enable,
                     NextState("IDLE")
                 ).Else(
-                    If(falling_edge,
+                    If(rising_edge,
                         If((tx_cnt == 0) & (~sync_pin if frame_format == I2S_FORMAT.I2S_STANDARD else sync_pin),
                             NextValue(tx_cnt, sample_width),
-                            NextState("LEFT"),
+                            NextState("LEFT_FALL"),
                             NextValue(tx_buf, Cat(tx_rd_d,offset)),
                             tx_rden.eq(1)
                         ).Elif(tx_cnt > 0,
-                            NextState("RIGHT")
+                            NextState("RIGHT_FALL")
                         )
                     )
                 )

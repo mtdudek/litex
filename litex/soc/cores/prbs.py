@@ -1,11 +1,15 @@
-# This file is Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015-2019 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
+# SPDX-License-Identifier: BSD-2-Clause
 
 from operator import xor, add
 from functools import reduce
 
 from migen import *
+from migen.genlib.misc import WaitTimer
 from migen.genlib.cdc import MultiReg
 
 # PRBS Generators ----------------------------------------------------------------------------------
@@ -16,7 +20,7 @@ class PRBSGenerator(Module):
 
         # # #
 
-        state = Signal(n_state, reset=1)
+        state  = Signal(n_state, reset=1)
         curval = [state[i] for i in range(n_state)]
         curval += [0]*(n_out - n_state)
         for i in range(n_out):
@@ -49,23 +53,23 @@ class PRBS31Generator(PRBSGenerator):
 class PRBSTX(Module):
     def __init__(self, width, reverse=False):
         self.config = Signal(2)
-        self.i = Signal(width)
-        self.o = Signal(width)
+        self.i      = Signal(width)
+        self.o      = Signal(width)
 
         # # #
 
         config = Signal(2)
 
-        # generators
+        # Generators.
         self.specials += MultiReg(self.config, config)
-        prbs7 = PRBS7Generator(width)
+        prbs7  = PRBS7Generator(width)
         prbs15 = PRBS15Generator(width)
         prbs31 = PRBS31Generator(width)
         self.submodules += prbs7, prbs15, prbs31
 
-        # select
+        # PRBS Selection.
         prbs_data = Signal(width)
-        self.comb += \
+        self.comb += [
             If(config == 0b11,
                 prbs_data.eq(prbs31.o)
             ).Elif(config == 0b10,
@@ -73,40 +77,48 @@ class PRBSTX(Module):
             ).Else(
                 prbs_data.eq(prbs7.o)
             )
+        ]
 
-        # optional bits reversing
+        # Optional Bits Reversing.
         if reverse:
             new_prbs_data = Signal(width)
             self.comb += new_prbs_data.eq(prbs_data[::-1])
             prbs_data = new_prbs_data
 
-        # prbs / data mux
-        self.comb += \
-            If(config == 0,
-                self.o.eq(self.i)
-            ).Else(
+        # PRBS / Data Selection.
+        self.comb += [
+            self.o.eq(self.i),
+            If(config != 0,
                 self.o.eq(prbs_data)
             )
+        ]
 
 # PRBS Checkers ------------------------------------------------------------------------------------
 
 class PRBSChecker(Module):
     def __init__(self, n_in, n_state=23, taps=[17, 22]):
-        self.i = Signal(n_in)
+        self.i      = Signal(n_in)
         self.errors = Signal(n_in)
 
         # # #
 
-        state = Signal(n_state, reset=1)
+        # LFSR Update / Check.
+        state  = Signal(n_state, reset=1)
         curval = [state[i] for i in range(n_state)]
         for i in reversed(range(n_in)):
             correctv = reduce(xor, [curval[tap] for tap in taps])
-            self.sync += self.errors[i].eq(self.i[i] != correctv)
+            self.comb += self.errors[i].eq(self.i[i] != correctv)
             curval.insert(0, self.i[i])
             curval.pop()
-
         self.sync += state.eq(Cat(*curval[:n_state]))
 
+        # Idle Check.
+        i_last     = Signal(n_in)
+        idle_timer = WaitTimer(1024)
+        self.submodules += idle_timer
+        self.sync += i_last.eq(self.i)
+        self.comb += idle_timer.wait.eq(self.i == i_last)
+        self.comb += If(idle_timer.done, self.errors.eq(2**n_in-1))
 
 class PRBS7Checker(PRBSChecker):
     def __init__(self, n_out):
@@ -126,24 +138,25 @@ class PRBS31Checker(PRBSChecker):
 
 class PRBSRX(Module):
     def __init__(self, width, reverse=False):
-        self.i = Signal(width)
         self.config = Signal(2)
-        self.errors = Signal(32)
+        self.pause  = Signal()
+        self.i      = Signal(width)
+        self.errors = errors = Signal(32)
 
         # # #
 
         config = Signal(2)
 
-        # optional bits reversing
+        # Optional bits reversing
         prbs_data = self.i
         if reverse:
             new_prbs_data = Signal(width)
             self.comb += new_prbs_data.eq(prbs_data[::-1])
             prbs_data = new_prbs_data
 
-        # checkers
+        # Checkers
         self.specials += MultiReg(self.config, config)
-        prbs7 = PRBS7Checker(width)
+        prbs7  = PRBS7Checker(width)
         prbs15 = PRBS15Checker(width)
         prbs31 = PRBS31Checker(width)
         self.submodules += prbs7, prbs15, prbs31
@@ -153,16 +166,17 @@ class PRBSRX(Module):
             prbs31.i.eq(prbs_data)
         ]
 
-        # errors count
-        self.sync += \
+        # Errors count
+        self.sync += [
             If(config == 0,
-                self.errors.eq(0)
-            ).Elif(self.errors != (2**32-1),
+                errors.eq(0)
+            ).Elif(~self.pause & (errors != (2**32-1)),
                 If(config == 0b01,
-                    self.errors.eq(self.errors + (prbs7.errors != 0))
+                    errors.eq(errors + (prbs7.errors != 0))
                 ).Elif(config == 0b10,
-                    self.errors.eq(self.errors + (prbs15.errors != 0))
+                    errors.eq(errors + (prbs15.errors != 0))
                 ).Elif(config == 0b11,
-                    self.errors.eq(self.errors + (prbs31.errors != 0))
+                    errors.eq(errors + (prbs31.errors != 0))
                 )
             )
+        ]

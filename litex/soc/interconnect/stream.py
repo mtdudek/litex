@@ -1,7 +1,10 @@
-# This file is Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
-# This file is Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
-# This file is Copyright (c) 2018 Tim 'mithro' Ansell <me@mith.ro>
-# License: BSD
+#
+# This file is part of LiteX.
+#
+# Copyright (c) 2015 Sebastien Bourdeauducq <sb@m-labs.hk>
+# Copyright (c) 2015-2020 Florent Kermarrec <florent@enjoy-digital.fr>
+# Copyright (c) 2018 Tim 'mithro' Ansell <me@mith.ro>
+# SPDX-License-Identifier: BSD-2-Clause
 
 import math
 
@@ -67,7 +70,7 @@ class Endpoint(Record):
         Record.__init__(self, self.description.get_full_layout(), name, **kwargs)
         set_reset_less(self.first)
         set_reset_less(self.last)
-        set_reset_less(self.payload)
+        #set_reset_less(self.payload) # FIXME: cause issues with LiteSATA, understand why and uncomment.
         set_reset_less(self.param)
 
     def __getattr__(self, name):
@@ -228,7 +231,8 @@ class SyncFIFO(_FIFOWrapper):
 
 
 class AsyncFIFO(_FIFOWrapper):
-    def __init__(self, layout, depth=4, buffered=False):
+    def __init__(self, layout, depth=None, buffered=False):
+        depth = 4 if depth is None else depth
         assert depth >= 4
         _FIFOWrapper.__init__(self,
             fifo_class = fifo.AsyncFIFOBuffered if buffered else fifo.AsyncFIFO,
@@ -238,7 +242,7 @@ class AsyncFIFO(_FIFOWrapper):
 # ClockDomainCrossing ------------------------------------------------------------------------------
 
 class ClockDomainCrossing(Module):
-    def __init__(self, layout, cd_from="sys", cd_to="sys"):
+    def __init__(self, layout, cd_from="sys", cd_to="sys", depth=None):
         self.sink   = Endpoint(layout)
         self.source = Endpoint(layout)
         # # #
@@ -246,7 +250,7 @@ class ClockDomainCrossing(Module):
         if cd_from == cd_to:
             self.comb += self.sink.connect(self.source)
         else:
-            cdc = AsyncFIFO(layout)
+            cdc = AsyncFIFO(layout, depth)
             cdc = ClockDomainsRenamer({"write": cd_from, "read": cd_to})(cdc)
             self.submodules += cdc
             self.comb += self.sink.connect(cdc.sink)
@@ -262,7 +266,7 @@ class Multiplexer(Module):
             sink = Endpoint(layout)
             setattr(self, "sink"+str(i), sink)
             sinks.append(sink)
-        self.sel = Signal(max=n)
+        self.sel = Signal(max=max(n, 2))
 
         # # #
 
@@ -280,7 +284,7 @@ class Demultiplexer(Module):
             source = Endpoint(layout)
             setattr(self, "source"+str(i), source)
             sources.append(source)
-        self.sel = Signal(max=n)
+        self.sel = Signal(max=max(n, 2))
 
         # # #
 
@@ -288,6 +292,25 @@ class Demultiplexer(Module):
         for i, source in enumerate(sources):
             cases[i] = self.sink.connect(source)
         self.comb += Case(self.sel, cases)
+
+
+# Gate ---------------------------------------------------------------------------------------------
+
+class Gate(Module):
+    def __init__(self, layout, sink_ready_when_disabled=False):
+        self.sink   = Endpoint(layout)
+        self.source = Endpoint(layout)
+        self.enable = Signal()
+
+        # # #
+
+        self.comb += [
+            If(self.enable,
+                self.sink.connect(self.source)
+            ).Else(
+                self.sink.ready.eq(int(sink_ready_when_disabled))
+            )
+        ]
 
 # Converter ----------------------------------------------------------------------------------------
 
@@ -515,6 +538,10 @@ class Gearbox(Module):
         # # #
 
         io_lcm = lcm(i_dw, o_dw)
+        if (io_lcm//i_dw) < 2:
+            io_lcm = io_lcm * 2
+        if (io_lcm//o_dw) < 2:
+            io_lcm = io_lcm * 2
 
         # Control path
 
@@ -563,6 +590,30 @@ class Gearbox(Module):
             self.comb += source.data.eq(o_data)
         else:
             self.comb += source.data.eq(o_data[::-1])
+
+# Shifter ------------------------------------------------------------------------------------------
+
+class Shifter(PipelinedActor):
+    def __init__(self, dw, shift=None):
+        self.shift  = Signal(max=dw) if shift is None else shift
+        self.sink   = sink   = Endpoint([("data", dw)])
+        self.source = source = Endpoint([("data", dw)])
+        PipelinedActor.__init__(self, latency=2)
+
+        # # #
+
+        # Accumulate current/last sink.data.
+        r = Signal(2*dw)
+        self.sync += If(self.pipe_ce,
+            r[:dw].eq(r[dw:]),
+            r[dw:].eq(sink.data)
+        )
+
+        # Select output data based on shift.
+        cases = {}
+        for i in range(dw):
+            cases[i] = self.source.data.eq(r[i:dw+i])
+        self.comb += Case(self.shift, cases)
 
 # Monitor ------------------------------------------------------------------------------------------
 
@@ -620,7 +671,7 @@ class Monitor(Module, AutoCSR):
 
         # Tokens Count -----------------------------------------------------------------------------
         if with_tokens:
-            tokens_counter = MonitorCounter(reset, latch, endpoint.valid & endpoint.ready, self.tokens.status)
+            token_counter = MonitorCounter(reset, latch, endpoint.valid & endpoint.ready, self.tokens.status)
             self.submodules += token_counter
 
         # Overflows Count (only useful when endpoint is expected to always be ready) ---------------
@@ -812,25 +863,22 @@ class Pipeline(Module):
     def __init__(self, *modules):
         n = len(modules)
         m = modules[0]
-        # expose sink of first module
-        # if available
+        # Expose sink of first module if available.
         if hasattr(m, "sink"):
             self.sink = m.sink
+        # Iterate on Modules/Endpoints.
         for i in range(1, n):
             m_n = modules[i]
-            if isinstance(m, Endpoint):
-                source = m
-            else:
-                source = m.source
-            if isinstance(m_n, Endpoint):
-                sink = m_n
-            else:
-                sink = m_n.sink
+            # If m is an Endpoint, use it as Source, else use Module.source.
+            source = m if isinstance(m, Endpoint) else m.source
+            # If m_n is an Endpoint, use it as Sink, else use Module.sink.
+            sink = m_n if isinstance(m_n, Endpoint) else m_n.sink
+            # Connect Source to Sink (when m is not m_n).
             if m is not m_n:
                 self.comb += source.connect(sink)
+            # Update m.
             m = m_n
-        # expose source of last module
-        # if available
+        # Expose source of last module if available.
         if hasattr(m, "source"):
             self.source = m.source
 

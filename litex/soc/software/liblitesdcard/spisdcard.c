@@ -10,10 +10,11 @@
 
 #include <generated/csr.h>
 #include <generated/mem.h>
+#include <generated/soc.h>
 #include <system.h>
 
-#include "fat/ff.h"
-#include "fat/diskio.h"
+#include <libfatfs/ff.h>
+#include <libfatfs/diskio.h>
 #include "spisdcard.h"
 
 #ifdef CSR_SPISDCARD_BASE
@@ -24,20 +25,25 @@
 #define SPISDCARD_CLK_FREQ_INIT 400000
 #endif
 #ifndef SPISDCARD_CLK_FREQ
-#define SPISDCARD_CLK_FREQ 16000000
+#define SPISDCARD_CLK_FREQ 20000000
 #endif
 
 /*-----------------------------------------------------------------------*/
-/* SPI Master low-level functions                                        */
+/* Helpers                                                               */
+/*-----------------------------------------------------------------------*/
+
+#define max(x, y) (((x) > (y)) ? (x) : (y))
+#define min(x, y) (((x) < (y)) ? (x) : (y))
+
+/*-----------------------------------------------------------------------*/
+/* SPI SDCard clocker functions                                          */
 /*-----------------------------------------------------------------------*/
 
 static void spi_set_clk_freq(uint32_t clk_freq) {
     uint32_t divider;
     divider = CONFIG_CLOCK_FREQUENCY/clk_freq + 1;
-    if (divider >= 65535) /* 16-bit hardware divider */
-        divider = 65535;
-    if (divider <= 2)     /* At least half CPU speed */
-        divider = 2;
+    divider = max(divider,     2);
+    divider = min(divider,   256);
 #ifdef SPISDCARD_DEBUG
     printf("Setting SDCard clk freq to ");
     if (clk_freq > 1000000)
@@ -47,6 +53,10 @@ static void spi_set_clk_freq(uint32_t clk_freq) {
 #endif
     spisdcard_clk_divider_write(divider);
 }
+
+/*-----------------------------------------------------------------------*/
+/* SPI SDCard low-level functions                                        */
+/*----------------------------------------------------------------------*/
 
 static uint8_t spi_xfer(uint8_t byte) {
     /* Write byte on MOSI */
@@ -114,18 +124,8 @@ static void spisdcardread_bytes(uint8_t* buf, uint16_t n) {
 /* SPI SDCard blocks Xfer functions                                      */
 /*-----------------------------------------------------------------------*/
 
-static void busy_wait_us(unsigned int us)
-{
-    timer0_en_write(0);
-    timer0_reload_write(0);
-    timer0_load_write(CONFIG_CLOCK_FREQUENCY/1000000*us);
-    timer0_en_write(1);
-    timer0_update_value_write(1);
-    while(timer0_value_read()) timer0_update_value_write(1);
-}
-
 static uint8_t spisdcardreceive_block(uint8_t *buf) {
-    uint8_t i;
+    uint16_t i;
     uint32_t timeout;
 
     /* Wait 100ms for a start of block */
@@ -140,17 +140,11 @@ static uint8_t spisdcardreceive_block(uint8_t *buf) {
         return 0;
 
     /* Receive block */
-    spisdcard_mosi_write(0xffffffff);
-    for (i=0; i<128; i++) {
-        uint32_t word;
-        spisdcard_control_write(32*SPI_LENGTH | SPI_START);
-        while(spisdcard_status_read() != SPI_DONE);
-        word = spisdcard_miso_read();
-        buf[0] = (word >> 24) & 0xff;
-        buf[1] = (word >> 16) & 0xff;
-        buf[2] = (word >>  8) & 0xff;
-        buf[3] = (word >>  0) & 0xff;
-        buf += 4;
+    spisdcard_mosi_write(0xff);
+    for (i=0; i<512; i++) {
+        spisdcard_control_write(8*SPI_LENGTH | SPI_START);
+        while (spisdcard_status_read() != SPI_DONE);
+        *buf++ = spisdcard_miso_read();
     }
 
     /* Discard CRC */

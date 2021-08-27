@@ -48,9 +48,10 @@
 #define SDCARD_CTRL_DATA_TRANSFER_READ  1
 #define SDCARD_CTRL_DATA_TRANSFER_WRITE 2
 
-#define SDCARD_CTRL_RESPONSE_NONE  0
-#define SDCARD_CTRL_RESPONSE_SHORT 1
-#define SDCARD_CTRL_RESPONSE_LONG  2
+#define SDCARD_CTRL_RESPONSE_NONE       0
+#define SDCARD_CTRL_RESPONSE_SHORT      1
+#define SDCARD_CTRL_RESPONSE_LONG       2
+#define SDCARD_CTRL_RESPONSE_SHORT_BUSY 3
 
 /*-----------------------------------------------------------------------*/
 /* SDCard command helpers                                                */
@@ -61,23 +62,27 @@ int sdcard_wait_data_done(void);
 int sdcard_wait_response(void);
 
 /*-----------------------------------------------------------------------*/
+/* SDCard clocker functions                                              */
+/*-----------------------------------------------------------------------*/
+
+void sdcard_set_clk_freq(uint32_t clk_freq, int show);
+
+/*-----------------------------------------------------------------------*/
 /* SDCard commands functions                                             */
 /*-----------------------------------------------------------------------*/
 
-void sdcard_go_idle(void);
+int sdcard_go_idle(void);
 int sdcard_send_ext_csd(void);
-int sdcard_app_cmd(int rca);
-int sdcard_app_send_op_cond(int hcc, int s18r);
+int sdcard_app_cmd(uint16_t rca);
+int sdcard_app_send_op_cond(int hcs);
 int sdcard_all_send_cid(void);
 int sdcard_set_relative_address(void);
 
-int sdcard_send_cid(unsigned int rca);
-void sdcard_decode_cid(void);
-int sdcard_send_csd(unsigned int rca);
-void sdcard_decode_csd(void);
-int sdcard_select_card(unsigned int rca);
+int sdcard_send_cid(uint16_t rca);
+int sdcard_send_csd(uint16_t rca);
+int sdcard_select_card(uint16_t rca);
 int sdcard_app_set_bus_width(void);
-int sdcard_switch(unsigned int mode, unsigned int group, unsigned int value, unsigned int dstaddr);
+int sdcard_switch(unsigned int mode, unsigned int group, unsigned int value);
 int sdcard_app_send_scr(void);
 int sdcard_app_set_blocklen(unsigned int blocklen);
 int sdcard_write_single_block(unsigned int blockaddr);
@@ -85,8 +90,11 @@ int sdcard_write_multiple_block(unsigned int blockaddr, unsigned int blockcnt);
 int sdcard_read_single_block(unsigned int blockaddr);
 int sdcard_read_multiple_block(unsigned int blockaddr, unsigned int blockcnt);
 int sdcard_stop_transmission(void);
-int sdcard_send_status(unsigned int rca);
+int sdcard_send_status(uint16_t rca);
 int sdcard_set_block_count(unsigned int blockcnt);
+uint16_t sdcard_decode_rca(void);
+void sdcard_decode_cid(void);
+void sdcard_decode_csd(void);
 
 /*-----------------------------------------------------------------------*/
 /* SDCard user functions                                                 */
