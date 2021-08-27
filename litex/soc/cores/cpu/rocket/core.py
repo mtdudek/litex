@@ -99,7 +99,7 @@ class RocketRV64(CPU):
     # GCC Flags.
     @property
     def gcc_flags(self):
-        flags =  "-mno-save-restore "
+        flags =  "-mcmodel=medany -mno-save-restore "
         flags += GCC_FLAGS[self.variant]
         flags += "-D__rocket__ "
         return flags
