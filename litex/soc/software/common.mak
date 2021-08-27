@@ -24,6 +24,12 @@ AR_quiet      = @echo " AR      " $@ && $(AR_normal)
 LD_quiet      = @echo " LD      " $@ && $(LD_normal)
 OBJCOPY_quiet = @echo " OBJCOPY " $@ && $(OBJCOPY_normal)
 
+ifeq ($(CPUENDIANNESS),little)
+	endian = -D __LITTLE_ENDIAN
+else
+	endian = -D __BIG_ENDIAN
+endif
+
 ifeq ($(V),1)
 	CC = $(CC_normal)
 	CX = $(CX_normal)
