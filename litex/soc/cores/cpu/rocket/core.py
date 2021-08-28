@@ -93,7 +93,7 @@ class RocketRV64(CPU):
             "sram"     : 0x11000000,
             "csr"      : 0x12000000,
             "ethmac"   : 0x30000000,
-            "main_ram" : 0x80000000,
+            "main_ram" : 0x40000000,
         }
 
     # GCC Flags.
